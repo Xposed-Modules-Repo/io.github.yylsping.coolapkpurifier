@@ -37,18 +37,7 @@
 .\gradlew.bat test assembleDebug
 ```
 
-维护者本地的正式构建使用本项目专属发布密钥：
-
-- 密钥：`signing-private/release.p12`
-- 凭据：`signing-private/signing.properties`
-
-这两个文件均已被 `.gitignore` 排除，不会提交到 GitHub。存在本地签名配置时，执行：
-
-```powershell
-.\gradlew.bat test assembleRelease
-```
-
-发布密钥决定 Android 能否覆盖升级。请加密备份整个 `signing-private/` 目录，切勿删除、重新生成或提交其中内容。由于本项目此前的 APK 使用测试签名，首次切换到该发布密钥时需要先卸载旧版；此后的正式版本可以直接覆盖升级。
+测试 APK 输出到 `app/build/outputs/apk/debug/`。面向普通用户的已签名版本请从 GitHub Releases 下载。
 
 ## 许可证
 
