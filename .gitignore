@@ -1,0 +1,34 @@
+.gradle/
+**/build/
+.idea/
+*.iml
+local.properties
+.externalNativeBuild/
+**/.cxx/
+
+# Signing material and local secrets
+.env
+.env.*
+!.env.example
+keystore.properties
+!keystore.properties.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+
+# Local release artifacts and reverse-engineering inputs
+*.apk
+*.aab
+*-source.zip
+dist/
+reference/decompiled/
+
+# Internal validation notes
+/TEST_REPORT.md
+
+# OS files
+.DS_Store
+Thumbs.db
