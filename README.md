@@ -31,24 +31,24 @@
 
 需要 JDK 17、Android SDK 35，并可从 Maven Central 获取 `io.github.libxposed:api:102.0.0`。
 
-运行单元测试并生成使用本机调试密钥签名的兼容包：
+运行单元测试并生成 debug 测试包：
 
 ```powershell
-.\gradlew.bat test assembleCompatible
+.\gradlew.bat test assembleDebug
 ```
 
-正式发布前，将 `keystore.properties.example` 复制为 `keystore.properties`，填写独立发布密钥的路径和凭据，然后执行：
+维护者本地的正式构建使用本项目专属发布密钥：
+
+- 密钥：`signing-private/release.p12`
+- 凭据：`signing-private/signing.properties`
+
+这两个文件均已被 `.gitignore` 排除，不会提交到 GitHub。存在本地签名配置时，执行：
 
 ```powershell
 .\gradlew.bat test assembleRelease
 ```
 
-`keystore.properties` 与常见 keystore 文件已被 `.gitignore` 排除，不应提交到仓库。
-
-## 相关项目
-
-- [bili hook](https://github.com/yylsping/bili-hook)：面向哔哩哔哩 7.4.0 的画质解锁与去广告模块。
-- [X AdFree](https://github.com/yylsping/x-adfree)：面向 X Android 客户端的去广告模块。
+发布密钥决定 Android 能否覆盖升级。请加密备份整个 `signing-private/` 目录，切勿删除、重新生成或提交其中内容。由于本项目此前的 APK 使用测试签名，首次切换到该发布密钥时需要先卸载旧版；此后的正式版本可以直接覆盖升级。
 
 ## 许可证
 

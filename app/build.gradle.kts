@@ -4,10 +4,10 @@ plugins {
     id("com.android.application")
 }
 
-val keystorePropertiesFile = rootProject.file("keystore.properties")
-val keystoreProperties = Properties().apply {
-    if (keystorePropertiesFile.isFile) {
-        keystorePropertiesFile.inputStream().use(::load)
+val signingPropertiesFile = rootProject.file("signing-private/signing.properties")
+val signingProperties = Properties().apply {
+    if (signingPropertiesFile.isFile) {
+        signingPropertiesFile.inputStream().use(::load)
     }
 }
 
@@ -27,11 +27,12 @@ android {
 
     signingConfigs {
         create("release") {
-            if (keystorePropertiesFile.isFile) {
-                storeFile = rootProject.file(requireNotNull(keystoreProperties.getProperty("storeFile")))
-                storePassword = requireNotNull(keystoreProperties.getProperty("storePassword"))
-                keyAlias = requireNotNull(keystoreProperties.getProperty("keyAlias"))
-                keyPassword = requireNotNull(keystoreProperties.getProperty("keyPassword"))
+            if (signingPropertiesFile.isFile) {
+                storeFile = rootProject.file(requireNotNull(signingProperties.getProperty("storeFile")))
+                storePassword = requireNotNull(signingProperties.getProperty("storePassword"))
+                keyAlias = requireNotNull(signingProperties.getProperty("keyAlias"))
+                keyPassword = requireNotNull(signingProperties.getProperty("keyPassword"))
+                storeType = "PKCS12"
             }
         }
     }
@@ -55,7 +56,7 @@ android {
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = false
-            signingConfig = if (keystorePropertiesFile.isFile) {
+            signingConfig = if (signingPropertiesFile.isFile) {
                 signingConfigs.getByName("release")
             } else {
                 null

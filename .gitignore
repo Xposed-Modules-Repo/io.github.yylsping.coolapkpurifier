@@ -10,6 +10,7 @@ local.properties
 .env
 .env.*
 !.env.example
+signing-private/
 keystore.properties
 !keystore.properties.example
 *.jks
