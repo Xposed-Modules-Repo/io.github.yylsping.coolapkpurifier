@@ -29,6 +29,7 @@ reference/decompiled/
 
 # Internal validation notes
 /TEST_REPORT.md
+/XPOSED_UPDATE.md
 
 # OS files
 .DS_Store
