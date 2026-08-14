@@ -6,6 +6,6 @@
 
 # Hook handles and the coordinator are deliberate strong roots. Modern module entry
 # instances are not guaranteed to remain strongly reachable after lifecycle callbacks.
--keep,allowobfuscation class io.github.coolapk.adblock.** {
+-keep,allowobfuscation class io.github.yylsping.coolapkpurifier.** {
     *;
 }

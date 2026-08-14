@@ -1,4 +1,4 @@
-package io.github.coolapk.adblock;
+package io.github.yylsping.coolapkpurifier;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;

@@ -12,15 +12,15 @@ val signingProperties = Properties().apply {
 }
 
 android {
-    namespace = "io.github.coolapk.adblock"
+    namespace = "io.github.yylsping.coolapkpurifier"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "io.github.coolapk.adblock"
+        applicationId = "io.github.yylsping.coolapkpurifier"
         minSdk = 23
         targetSdk = 35
-        versionCode = 5
-        versionName = "2.0.0"
+        versionCode = 6
+        versionName = "2.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

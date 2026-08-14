@@ -1,4 +1,4 @@
-package io.github.coolapk.adblock;
+package io.github.yylsping.coolapkpurifier;
 
 import java.lang.reflect.Method;
 

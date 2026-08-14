@@ -17,7 +17,7 @@
 | 目标应用 | 酷安（包名 `com.coolapk.market`） |
 | Android | 6.0（API 23）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
-| 模块版本 | 2.0.0（versionCode 5） |
+| 模块版本 | 2.0.1（versionCode 6） |
 
 酷安内部类名和数据模型可能随版本变化。若升级酷安后功能失效，请先停用模块并提交包含酷安版本号、Android 版本和相关 LSPosed 日志的问题报告。
 
