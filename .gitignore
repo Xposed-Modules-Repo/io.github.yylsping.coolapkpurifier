@@ -53,3 +53,6 @@ history-apks/
 
 # User-provided cache finalization brief
 /Stable 最终缓存收尾.md
+
+# Local packaging archive
+/coolapk--last.zip
