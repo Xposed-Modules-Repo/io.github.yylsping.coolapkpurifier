@@ -44,6 +44,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final SplashGate splashGate = new SplashGate();
     private final RuntimeDexObserver runtimeDexObserver;
     private final RecoveryController recoveryController;
+    private final FirstAdaptationToast firstAdaptationToast;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable ->
             new Thread(runnable, "pool-resolver-worker"));
@@ -77,6 +78,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         this.entityListHooks = new EntityListHooks(module, log);
         this.runtimeDexObserver = new RuntimeDexObserver(module, log, this);
         this.recoveryController = new RecoveryController(log, null, null);
+        this.firstAdaptationToast = new FirstAdaptationToast(log);
     }
 
     void install() throws ReflectiveOperationException {
@@ -323,6 +325,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
 
         ClassLoader loader = resolveLoader();
+        // Only reachable after a cache miss / invalid cache. Cache-hit runs
+        // return earlier, so the Toast is never shown on cache hits.
+        firstAdaptationToast.showOnce(appContext);
         markState(BootstrapState.SPLASH_CRITICAL);
         trace.mark("splashResolveStart", "trigger=" + trigger);
         ResolvedTarget splash = new SplashCriticalResolver(bridge, loader, log).resolve();
