@@ -50,3 +50,6 @@ history-apks/
 
 # User-provided bootstrap retirement brief
 /Stable 最终微优化：Bootstrap 终态零开销.md
+
+# User-provided cache finalization brief
+/Stable 最终缓存收尾.md

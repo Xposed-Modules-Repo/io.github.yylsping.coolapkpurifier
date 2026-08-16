@@ -8,8 +8,6 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -222,37 +220,49 @@ final class ResolutionCache {
     }
 
     /**
-     * Serializes the complete root, verifies the real UTF-8 byte size against
-     * the 1 MiB budget, evicts more entries if needed, then performs an atomic
-     * replace. Returns false when persistence was not safe.
+     * Persists the complete root. Every write unconditionally trims entries
+     * to at most 5, then serializes the real UTF-8 root. If root metadata
+     * still exceeds the 1 MiB budget, entries are evicted again and the root
+     * is re-serialized until both limits hold. Finally the temp file replaces
+     * the destination with a single atomic rename; failure leaves the old
+     * destination untouched.
      */
     private boolean writeJson(JSONObject root, String protectKey) {
         try {
             trimRecoveryMarkers(root.optJSONArray("recoveryAttempted"));
+            JSONArray entries = root.optJSONArray("entries");
+            if (entries == null) {
+                entries = new JSONArray();
+                root.put("entries", entries);
+            }
+            // Hard entry-count limit applies on every write, not only when the
+            // serialized root exceeds the byte budget.
+            entries = evictForSize(entries, protectKey);
+            root.put("entries", entries);
+
             byte[] bytes = serialize(root);
-            if (bytes == null || bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
-                root.put("entries", evictForSize(root.optJSONArray("entries"), protectKey));
-                bytes = serialize(root);
-            }
-            if (bytes == null || bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
-                return false;
-            }
-            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
-            try (FileOutputStream out = new FileOutputStream(temp)) {
-                out.write(bytes);
-                out.flush();
-                out.getFD().sync();
-            }
-            if (file.exists() && !file.delete() && file.length() > 0) {
-                return false;
-            }
-            if (!temp.renameTo(file)) {
-                try (OutputStream out = new FileOutputStream(file)) {
-                    out.write(bytes);
-                    out.flush();
+            String currentProtect = protectKey;
+            while (bytes == null || bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
+                entries = evictForSize(root.optJSONArray("entries"), currentProtect);
+                root.put("entries", entries);
+                byte[] candidate = serialize(root);
+                if (candidate != null
+                        && candidate.length >= (bytes == null ? Integer.MAX_VALUE : bytes.length)) {
+                    // No progress possible while metadata alone exceeds the
+                    // hard budget.
+                    return false;
+                }
+                bytes = candidate;
+                currentProtect = null;
+                if (entries.length() == 0 && bytes != null
+                        && bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
+                    return false;
                 }
             }
-            return true;
+            if (bytes == null) {
+                return false;
+            }
+            return CacheAtomicWriter.write(file, bytes, CacheAtomicWriter.RENAME_REPLACE);
         } catch (Throwable ignored) {
             return false;
         }
