@@ -65,28 +65,25 @@ final class TargetIdentity {
         File apk = new File(apkPath);
         long size = apk.isFile() ? apk.length() : -1L;
 
-        StringBuilder split = new StringBuilder();
+        long[] splitSizes = null;
         if (info != null && info.splitSourceDirs != null) {
-            for (String path : info.splitSourceDirs) {
-                File splitFile = new File(path);
-                split.append('|').append(path).append(':')
-                        .append(splitFile.isFile() ? splitFile.length() : -1L);
+            splitSizes = new long[info.splitSourceDirs.length];
+            for (int i = 0; i < info.splitSourceDirs.length; i++) {
+                File splitFile = new File(info.splitSourceDirs[i]);
+                splitSizes[i] = splitFile.isFile() ? splitFile.length() : -1L;
             }
         }
 
-        // versionCode/versionName intentionally absent: functional behavior
-        // and cache validity must not depend on version numbers.
-        String tokenSource = "pkg=" + CoolapkModule.TARGET_PACKAGE
-                + "|apk=" + apkPath
-                + "|size=" + size
-                + "|split=" + split
-                + "|cert=" + signingHash;
+        // The random /data/app/... install path is intentionally excluded.
+        // versionCode/versionName are also intentionally absent: functional
+        // behavior and cache validity must not depend on them.
         return new TargetIdentity(
                 CoolapkModule.TARGET_PACKAGE,
                 apkPath,
                 size,
                 signingHash,
-                sha256(tokenSource),
+                StableIdentityKey.compute(CoolapkModule.TARGET_PACKAGE, size,
+                        splitSizes, signingHash),
                 versionCode,
                 versionName);
     }
@@ -95,8 +92,7 @@ final class TargetIdentity {
         return other != null
                 && token != null && token.equals(other.token)
                 && packageName.equals(other.packageName)
-                && apkSize == other.apkSize
-                && apkPath != null && apkPath.equals(other.apkPath);
+                && apkSize == other.apkSize;
     }
 
     String describe() {
