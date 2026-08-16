@@ -37,6 +37,10 @@ final class SplashGate {
         return !mainActivitySeen;
     }
 
+    boolean isMainActivitySeen() {
+        return mainActivitySeen;
+    }
+
     boolean isResolvedSplash(Activity activity) {
         Class<?> resolved = resolvedSplashClass;
         return resolved != null && resolved.isAssignableFrom(activity.getClass());

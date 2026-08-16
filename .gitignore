@@ -47,3 +47,6 @@ history-apks/
 
 # Local tool state
 /.dsh/
+
+# User-provided bootstrap retirement brief
+/Stable 最终微优化：Bootstrap 终态零开销.md

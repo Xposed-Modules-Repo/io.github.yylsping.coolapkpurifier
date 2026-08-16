@@ -49,6 +49,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             new Thread(runnable, "pool-resolver-worker"));
     private final Object stateLock = new Object();
     private final AtomicBoolean sessionRunning = new AtomicBoolean();
+    private final AtomicBoolean bootstrapRetired = new AtomicBoolean();
+    private final OnceFlag firstActivityPreRecorded = new OnceFlag();
+    private final OnceFlag firstActivityPostRecorded = new OnceFlag();
     private final List<HookHandle> bootstrapHandles = new java.util.ArrayList<>();
 
     private volatile BootstrapState state = BootstrapState.BOOTSTRAP;
@@ -137,7 +140,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             return;
         }
         String name = activity.getClass().getName();
-        if (!splashGate.isFirstActivitySeen()) {
+        if (firstActivityPreRecorded.tryOnce()) {
             splashGate.markFirstActivity();
             traceAfterContext("firstActivityPre", "class=" + name);
             runtimeDexObserver.notifyFirstActivityPre(activity.getClass().getClassLoader());
@@ -157,6 +160,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (state != BootstrapState.READY && state != BootstrapState.DEGRADED) {
             triggerSession("activityPre:" + name);
         }
+        maybeScheduleBootstrapRetire();
     }
 
     @Override
@@ -167,7 +171,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (SplashHooks.MAIN_ACTIVITY.equals(activity.getClass().getName())) {
             splashGate.markMainActivity();
         }
-        traceAfterContext("firstActivityPost", "class=" + activity.getClass().getName());
+        if (firstActivityPostRecorded.tryOnce()) {
+            traceAfterContext("firstActivityPost", "class=" + activity.getClass().getName());
+        }
+        maybeScheduleBootstrapRetire();
     }
 
     @Override
@@ -485,8 +492,43 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private void finishReady() {
         markState(BootstrapState.READY);
         cleanupTerminal();
+        maybeScheduleBootstrapRetire();
         log.info("resolver fullReady state=READY feedInstalled=" + (installedFeedMethod != null)
                 + " splashInstalled=" + installedSplashClass);
+    }
+
+    /**
+     * Event-driven retire. No polling. If the current call is inside the
+     * Instrumentation interceptor, retirement is posted to the next main
+     * thread message to avoid self-unhook races.
+     */
+    private void maybeScheduleBootstrapRetire() {
+        if (bootstrapRetired.get()) {
+            return;
+        }
+        if (BootstrapRetirePolicy.canRetire(
+                state, splashGate.isMainActivitySeen(), installedSplashClass != null)) {
+            mainHandler.post(this::retireBootstrap);
+        }
+    }
+
+    private void retireBootstrap() {
+        if (!BootstrapRetirePolicy.canRetire(
+                state, splashGate.isMainActivitySeen(), installedSplashClass != null)) {
+            return;
+        }
+        if (!bootstrapRetired.compareAndSet(false, true)) {
+            return;
+        }
+        BootstrapTrace current = trace;
+        if (current != null) {
+            current.freeze("terminalState",
+                    "state=" + state + " bootstrapRetired=true traceFrozen=true"
+                            + " elapsedMs=" + current.elapsedSinceStart());
+        }
+        splashHooks.retireBootstrapHooks();
+        log.info("coordinator bootstrapRetired=true state=" + state
+                + " traceFrozen=" + (current != null && current.isFrozen()));
     }
 
     private void cleanupTerminal() {
@@ -500,7 +542,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         runtimeDexObserver.close();
         closeSession("terminal");
         worker.shutdown();
-        traceAfterContext("lifecycle", "executorShutdown=true watcherUnhooked=true");
+        log.info("coordinator bootstrap lifecycle retired executorShutdown=true"
+                + " watcherUnhooked=true");
     }
 
     private void maybeRecoverAfterSplashResolved() {
@@ -539,6 +582,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if ("watchdog 20s deadline".equals(reason)) {
             markState(BootstrapState.DEGRADED);
             cleanupTerminal();
+            maybeScheduleBootstrapRetire();
             log.info("resolver watchdog deadline state=DEGRADED");
         }
     }

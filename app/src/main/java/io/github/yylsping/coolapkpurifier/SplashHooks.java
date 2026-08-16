@@ -33,7 +33,8 @@ final class SplashHooks {
     private final XposedModule module;
     private final ModuleLog log;
     private final ActivityObserver observer;
-    private final List<HookHandle> handles = new ArrayList<>();
+    private final List<HookHandle> bootstrapHandles = new ArrayList<>();
+    private final List<HookHandle> specificHandles = new ArrayList<>();
     private final Set<Method> hookedSpecific = new HashSet<>();
 
     SplashHooks(XposedModule module, ModuleLog log, ActivityObserver observer) {
@@ -71,7 +72,27 @@ final class SplashHooks {
                     }
                     return result;
                 });
-        handles.add(handle);
+        bootstrapHandles.add(handle);
+    }
+
+    /**
+     * Retires only the generic Instrumentation bootstrap hooks. Idempotent.
+     * The resolved specific splash hook is a business hook and stays alive.
+     */
+    synchronized void retireBootstrapHooks() {
+        int count = 0;
+        for (HookHandle handle : bootstrapHandles) {
+            try {
+                handle.unhook();
+                count++;
+            } catch (Throwable throwable) {
+                log.error("unable to retire instrumentation bootstrap hook", throwable);
+            }
+        }
+        bootstrapHandles.clear();
+        if (count > 0) {
+            log.info("instrumentation bootstrap hooks retired count=" + count);
+        }
     }
 
     synchronized boolean installSpecific(Class<?> splashBase) {
@@ -98,7 +119,7 @@ final class SplashHooks {
                         }
                         return result;
                     });
-            handles.add(handle);
+            specificHandles.add(handle);
             hookedSpecific.add(onCreate);
             log.info("specific splash hook installed class=" + splashBase.getName()
                     + " method=" + onCreate);
