@@ -11,6 +11,8 @@ import java.util.Locale;
 
 /** Monotonic-clock startup trace, persisted in the target app files dir. */
 final class BootstrapTrace {
+    private static final long MAX_BYTES = 256L * 1024L;
+
     private final File file;
     private final long startRealtime = SystemClock.elapsedRealtime();
 
@@ -22,8 +24,21 @@ final class BootstrapTrace {
         long now = SystemClock.elapsedRealtime();
         String line = String.format(Locale.US,
                 "rel=%6dms evt=%-22s %s%n", now - startRealtime, event, detail);
-        try (OutputStream out = new FileOutputStream(file, true)) {
-            out.write(line.getBytes(StandardCharsets.UTF_8));
+        try {
+            if (file.isFile() && file.length() > MAX_BYTES) {
+                // Keep the most recent startup trace only. Diagnostics must
+                // never grow without bound.
+                File old = new File(file.getParentFile(), file.getName() + ".old");
+                if (old.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    old.delete();
+                }
+                //noinspection ResultOfMethodCallIgnored
+                file.renameTo(old);
+            }
+            try (OutputStream out = new FileOutputStream(file, true)) {
+                out.write(line.getBytes(StandardCharsets.UTF_8));
+            }
         } catch (Throwable ignored) {
         }
     }

@@ -41,3 +41,6 @@ history-apks/
 
 # User-provided local architecture brief
 /启动时序与全版本 Resolver 架构优化.md
+
+# User-provided final stabilization brief
+/rc5 → Stable 最终收尾提示词.md

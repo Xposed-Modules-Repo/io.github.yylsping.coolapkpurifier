@@ -8,7 +8,9 @@ import android.os.PersistableBundle;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import io.github.libxposed.api.XposedInterface.ExceptionMode;
 import io.github.libxposed.api.XposedInterface.HookHandle;
@@ -32,6 +34,7 @@ final class SplashHooks {
     private final ModuleLog log;
     private final ActivityObserver observer;
     private final List<HookHandle> handles = new ArrayList<>();
+    private final Set<Method> hookedSpecific = new HashSet<>();
 
     SplashHooks(XposedModule module, ModuleLog log, ActivityObserver observer) {
         this.module = module;
@@ -71,16 +74,19 @@ final class SplashHooks {
         handles.add(handle);
     }
 
-    boolean installSpecific(Class<?> splashBase) {
-        int count = 0;
-        for (Method method : splashBase.getDeclaredMethods()) {
-            Class<?>[] parameters = method.getParameterTypes();
-            if (!"onCreate".equals(method.getName())
-                    || parameters.length != 1
-                    || parameters[0] != Bundle.class) {
-                continue;
-            }
-            HookHandle handle = module.hook(method)
+    synchronized boolean installSpecific(Class<?> splashBase) {
+        Method onCreate = TargetVerifier.findOnCreate(splashBase);
+        if (onCreate == null) {
+            log.info("specific splash hook skipped class=" + splashBase.getName()
+                    + " reason=noCoolapkOnCreate frameworkFallback=true");
+            return false;
+        }
+        if (hookedSpecific.contains(onCreate)) {
+            log.info("specific splash hook already installed method=" + onCreate);
+            return true;
+        }
+        try {
+            HookHandle handle = module.hook(onCreate)
                     .setExceptionMode(ExceptionMode.PROTECTIVE)
                     .setId("coolapk-specific-splash")
                     .intercept(chain -> {
@@ -93,12 +99,15 @@ final class SplashHooks {
                         return result;
                     });
             handles.add(handle);
-            count++;
+            hookedSpecific.add(onCreate);
+            log.info("specific splash hook installed class=" + splashBase.getName()
+                    + " method=" + onCreate);
+            return true;
+        } catch (Throwable throwable) {
+            log.error("specific splash hook install failed class=" + splashBase.getName(),
+                    throwable);
+            return false;
         }
-        if (count > 0) {
-            log.info("specific splash hook installed class=" + splashBase.getName());
-        }
-        return count > 0;
     }
 
     private void finishSplash(Activity activity, String source) {

@@ -57,14 +57,23 @@ final class RecoveryController {
             if (!canRecover(cache)) {
                 return;
             }
+        }
+        boolean markerPersisted = cache.markRecoveryAttempted(identity);
+        if (!markerPersisted) {
+            trace.mark("recoveryAborted", "reason=markerPersisted=false");
+            log.error("recoveryAborted=true reason=markerPersisted=false identity="
+                    + identity.shortToken(), null);
+            return;
+        }
+        synchronized (lock) {
             recovered = true;
         }
-        cache.markRecoveryAttempted(identity);
         log.info("recoveryRequired=true recoveryReason=firstLaunchSplashEscaped"
-                + " cacheVerified=true recoveryAttempt=1"
+                + " cacheVerified=true markerPersisted=true recoveryAttempt=1"
                 + " identity=" + identity.shortToken());
         boolean toastRequested = showToast();
-        trace.mark("recoveryScheduled", "toastRequested=" + toastRequested);
+        trace.mark("recoveryScheduled", "toastRequested=" + toastRequested
+                + " markerPersisted=true");
         mainHandler.postDelayed(this::killTargetProcess, TOAST_WINDOW_MILLIS);
     }
 

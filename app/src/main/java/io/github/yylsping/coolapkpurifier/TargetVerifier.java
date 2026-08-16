@@ -59,9 +59,17 @@ final class TargetVerifier {
                 && List.class.isAssignableFrom(method.getReturnType());
     }
 
+    /**
+     * Returns the most-derived onCreate(Bundle) declared by the Coolapk
+     * splash hierarchy. Framework/AndroidX Activity.onCreate is deliberately
+     * excluded so we never hook every Activity in the process.
+     */
     static Method findOnCreate(Class<?> type) {
         Class<?> cursor = type;
         while (cursor != null && cursor != Object.class) {
+            if (!cursor.getName().startsWith("com.coolapk.market.")) {
+                break;
+            }
             try {
                 Method method = cursor.getDeclaredMethod("onCreate", Bundle.class);
                 method.setAccessible(true);

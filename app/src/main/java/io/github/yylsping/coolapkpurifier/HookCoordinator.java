@@ -28,8 +28,8 @@ import io.github.libxposed.api.XposedModule;
  * failure: DEGRADED
  * </pre>
  *
- * Normal triggers are Application.attach, runtime class load and the first
- * Activity pre-create. Timer watchdogs are only a last-resort fallback.
+ * Normal triggers are Application.attach, runtime class load and Activity
+ * pre-create. Timer watchdogs are only a last-resort fallback.
  */
 final class HookCoordinator implements SplashHooks.ActivityObserver,
         RuntimeDexObserver.Listener {
@@ -58,11 +58,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile TargetIdentity identity;
     private volatile DexKitSession dexKitSession;
     private final Map<String, ResolvedTarget> resolvedTargets = new LinkedHashMap<>();
+    private volatile ClassLoader activeRuntimeLoader;
     private volatile Method installedFeedMethod;
     private volatile String installedSplashClass;
     private volatile boolean splashCandidateSeenBeforeReady;
     private volatile boolean splashFinishedByHook;
-    private volatile long runtimeReadyAt;
+    private volatile boolean terminalCleaned;
     private int sessionAttempt;
 
     HookCoordinator(XposedModule module, ModuleLog log, ClassLoader primaryLoader) {
@@ -139,7 +140,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (!splashGate.isFirstActivitySeen()) {
             splashGate.markFirstActivity();
             traceAfterContext("firstActivityPre", "class=" + name);
-            runtimeDexObserver.notifyFirstActivityPre();
+            runtimeDexObserver.notifyFirstActivityPre(activity.getClass().getClassLoader());
         }
         if (SplashHooks.MAIN_ACTIVITY.equals(name)) {
             splashGate.markMainActivity();
@@ -148,6 +149,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (splashGate.isFallbackSplashCandidate(activity)
                 || splashGate.isLegacySplash(activity)) {
             splashCandidateSeenBeforeReady = true;
+        }
+        ClassLoader activityLoader = activity.getClass().getClassLoader();
+        if (activeRuntimeLoader != null && activityLoader != activeRuntimeLoader) {
+            onRuntimeLoaderChanged(activityLoader, "activityLoaderChanged:" + name);
         }
         if (state != BootstrapState.READY && state != BootstrapState.DEGRADED) {
             triggerSession("activityPre:" + name);
@@ -175,28 +180,57 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     }
 
     // ------------------------------------------------------------------
-    // Runtime dex event
+    // Runtime dex / loader generation events
     // ------------------------------------------------------------------
 
     @Override
-    public void onRuntimeDexReady(String trigger) {
-        runtimeReadyAt = SystemClock.elapsedRealtime();
+    public void onRuntimeDexReady(String trigger, ClassLoader runtimeClassLoader) {
+        ClassLoader loader = runtimeClassLoader != null ? runtimeClassLoader : primaryLoader;
+        long previous = activeRuntimeLoader == null
+                ? -1L : System.identityHashCode(activeRuntimeLoader);
+        traceAfterContext("runtimeDexReady", "trigger=" + trigger
+                + " runtimeLoaderIdentity=" + System.identityHashCode(loader)
+                + " previousLoaderIdentity=" + previous);
+
         if (appContext == null) {
             appContext = currentApplication();
         }
         if (appContext != null && trace == null) {
             trace = new BootstrapTrace(appContext);
         }
-        traceAfterContext("runtimeDexReady", "trigger=" + trigger
-                + " loaderIdentity=" + System.identityHashCode(primaryLoader));
-        if (dexKitSession == null && trace != null) {
-            dexKitSession = new DexKitSession(log, trace, primaryLoader);
-            dexKitSession.notifyLoaderGenerationChanged();
+
+        boolean loaderChanged = activeRuntimeLoader != null && activeRuntimeLoader != loader;
+        if (activeRuntimeLoader == null || loaderChanged) {
+            if (loaderChanged) {
+                closeSession("runtimeLoaderChanged");
+            }
+            activeRuntimeLoader = loader;
+            if (dexKitSession == null && trace != null) {
+                dexKitSession = new DexKitSession(log, trace, activeRuntimeLoader);
+                dexKitSession.notifyLoaderGenerationChanged(
+                        loaderChanged ? "runtimeLoaderChanged" : "initial");
+            }
         }
         markState(BootstrapState.CACHE_VERIFY);
         log.info("coordinator runtimeDexReady trigger=" + trigger
-                + " loaderIdentity=" + System.identityHashCode(primaryLoader));
+                + " runtimeLoaderIdentity=" + System.identityHashCode(loader)
+                + " previousLoaderIdentity=" + previous
+                + " generation=" + (dexKitSession == null ? -1 : dexKitSession.getGeneration()));
         triggerSession("runtimeDex:" + trigger);
+    }
+
+    private void onRuntimeLoaderChanged(ClassLoader loader, String reason) {
+        long previous = activeRuntimeLoader == null
+                ? -1L : System.identityHashCode(activeRuntimeLoader);
+        traceAfterContext("runtimeLoaderChanged", "reason=" + reason
+                + " runtimeLoaderIdentity=" + System.identityHashCode(loader)
+                + " previousLoaderIdentity=" + previous);
+        log.info("coordinator runtimeLoaderChanged reason=" + reason
+                + " runtimeLoaderIdentity=" + System.identityHashCode(loader)
+                + " previousLoaderIdentity=" + previous);
+        closeSession(reason);
+        activeRuntimeLoader = loader;
+        runtimeDexObserver.rearm();
     }
 
     // ------------------------------------------------------------------
@@ -222,6 +256,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                         + " error=" + throwable
                         + " stack=" + android.util.Log.getStackTraceString(throwable));
                 markState(BootstrapState.DEGRADED);
+                cleanupTerminal();
             } finally {
                 sessionRunning.set(false);
             }
@@ -280,22 +315,25 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             return;
         }
 
+        ClassLoader loader = resolveLoader();
         markState(BootstrapState.SPLASH_CRITICAL);
         trace.mark("splashResolveStart", "trigger=" + trigger);
-        ResolvedTarget splash = new SplashCriticalResolver(bridge, primaryLoader, log).resolve();
+        ResolvedTarget splash = new SplashCriticalResolver(bridge, loader, log).resolve();
         trace.mark("splashResolveEnd",
                 "candidates=" + (splash == null ? "0" : "1")
                         + " source=" + (splash == null ? "none" : splash.source));
         if (splash != null) {
             applyTargets(singletonMap(TargetResolver.KEY_SPLASH_BASE, splash), "dexkit");
-            trace.mark("splashHookInstalled", splash.describe());
-            markState(BootstrapState.SPLASH_READY);
+        } else {
+            markState(BootstrapState.WAIT_RUNTIME_DEX);
+            runtimeDexObserver.rearm();
+            log.info("resolver splash retryable state=WAIT_RUNTIME_DEX"
+                    + " reason=zeroOrUnverifiableCandidates trigger=" + trigger);
         }
 
         markState(BootstrapState.FULL_RESOLVE);
         trace.mark("normalResolveStart", "trigger=" + trigger);
-        Map<String, ResolvedTarget> normal =
-                new NormalResolver(bridge, primaryLoader, log).resolve();
+        Map<String, ResolvedTarget> normal = new NormalResolver(bridge, loader, log).resolve();
         trace.mark("normalResolveEnd", "targets=" + normal.keySet());
         applyTargets(normal, "dexkit");
 
@@ -311,9 +349,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             markState(BootstrapState.FULL_RESOLVE);
             log.info("resolver splashReady normalIncomplete state=FULL_RESOLVE");
         } else {
-            markState(BootstrapState.DEGRADED);
-            log.info("resolver failed state=DEGRADED splash=" + isSplashReady()
-                    + " normal=" + areNormalTargetsReady());
+            // A zero-candidate splash is retryable and must not be terminal.
+            log.info("resolver incomplete splash=" + isSplashReady()
+                    + " normal=" + areNormalTargetsReady()
+                    + " state=RETRYABLE trigger=" + trigger);
         }
 
         maybeRecoverAfterSplashResolved();
@@ -321,8 +360,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     private Map<String, ResolvedTarget> verifyCacheTargets(Map<String, ResolvedTarget> cached) {
         Map<String, ResolvedTarget> verified = new LinkedHashMap<>();
+        ClassLoader loader = resolveLoader();
         for (ResolvedTarget target : cached.values()) {
-            String problem = TargetVerifier.verify(target, primaryLoader);
+            String problem = TargetVerifier.verify(target, loader);
             if (problem == null) {
                 verified.put(target.key, target);
             } else if (isClassNotReady(problem)) {
@@ -349,24 +389,40 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             trace = new BootstrapTrace(appContext);
         }
         if (dexKitSession == null) {
-            dexKitSession = new DexKitSession(log, trace, primaryLoader);
-            dexKitSession.notifyLoaderGenerationChanged();
+            dexKitSession = new DexKitSession(log, trace, resolveLoader());
+            dexKitSession.notifyLoaderGenerationChanged("sessionCreated:" + trigger);
         }
         return dexKitSession;
+    }
+
+    private ClassLoader resolveLoader() {
+        ClassLoader loader = activeRuntimeLoader;
+        return loader == null ? primaryLoader : loader;
+    }
+
+    private void closeSession(String reason) {
+        DexKitSession session = dexKitSession;
+        if (session != null) {
+            session.close();
+            traceAfterContext("bridgeClosed", "reason=" + reason
+                    + " generation=" + session.getGeneration());
+        }
+        dexKitSession = null;
     }
 
     private void applyTargets(Map<String, ResolvedTarget> targets, String source) {
         if (targets == null || targets.isEmpty()) {
             return;
         }
+        ClassLoader loader = resolveLoader();
         synchronized (resolvedTargets) {
             resolvedTargets.putAll(targets);
         }
-        entityListHooks.updateAccessors(targets, primaryLoader);
+        entityListHooks.updateAccessors(targets, loader);
 
         ResolvedTarget feed = targets.get(TargetResolver.KEY_FEED);
         if (feed != null && installedFeedMethod == null) {
-            Method method = DescriptorUtils.methodForDescriptor(feed.methodDescriptor, primaryLoader);
+            Method method = DescriptorUtils.methodForDescriptor(feed.methodDescriptor, loader);
             if (method != null) {
                 entityListHooks.install(method);
                 installedFeedMethod = method;
@@ -377,12 +433,27 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         ResolvedTarget splash = targets.get(TargetResolver.KEY_SPLASH_BASE);
         if (splash != null && installedSplashClass == null) {
             try {
-                Class<?> type = DescriptorUtils.classForName(splash.classDescriptor, primaryLoader);
-                if (type != null) {
-                    splashGate.setResolvedSplashClass(type);
-                    splashHooks.installSpecific(type);
+                Class<?> type = DescriptorUtils.classForName(splash.classDescriptor, loader);
+                if (type == null) {
+                    log.info("splash descriptor not loadable source=" + source
+                            + " target=" + splash.describe());
+                    return;
+                }
+                // Resolved class still powers the framework fallback gate...
+                splashGate.setResolvedSplashClass(type);
+                // ...but SPLASH_READY requires a real specific hook.
+                boolean installed = splashHooks.installSpecific(type);
+                if (installed) {
                     installedSplashClass = type.getName();
-                    log.info("installed splash hook source=" + source + " class=" + type.getName());
+                    traceAfterContext("splashHookInstalled", splash.describe()
+                            + " installed=true source=" + source);
+                    log.info("installed splash hook source=" + source
+                            + " class=" + type.getName());
+                } else {
+                    traceAfterContext("splashHookInstallFailed", splash.describe()
+                            + " source=" + source);
+                    log.info("splash specific hook not installed source=" + source
+                            + " class=" + type.getName() + " frameworkFallback=true");
                 }
             } catch (Throwable throwable) {
                 log.info("splash descriptor not loadable yet source=" + source
@@ -398,7 +469,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     }
 
     private boolean isSplashReady() {
-        return splashGate.hasResolvedSplashClass() && installedSplashClass != null;
+        return installedSplashClass != null;
     }
 
     private boolean areNormalTargetsReady() {
@@ -413,12 +484,23 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     private void finishReady() {
         markState(BootstrapState.READY);
-        if (dexKitSession != null) {
-            dexKitSession.close();
-        }
-        runtimeDexObserver.close();
+        cleanupTerminal();
         log.info("resolver fullReady state=READY feedInstalled=" + (installedFeedMethod != null)
                 + " splashInstalled=" + installedSplashClass);
+    }
+
+    private void cleanupTerminal() {
+        synchronized (stateLock) {
+            if (terminalCleaned) {
+                return;
+            }
+            terminalCleaned = true;
+        }
+        mainHandler.removeCallbacksAndMessages(null);
+        runtimeDexObserver.close();
+        closeSession("terminal");
+        worker.shutdown();
+        traceAfterContext("lifecycle", "executorShutdown=true watcherUnhooked=true");
     }
 
     private void maybeRecoverAfterSplashResolved() {
@@ -430,7 +512,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
         Map<String, ResolvedTarget> persisted = cache.loadTargets(identity);
         ResolvedTarget splash = persisted.get(TargetResolver.KEY_SPLASH_BASE);
-        if (splash == null || TargetVerifier.verify(splash, primaryLoader) != null) {
+        if (splash == null || TargetVerifier.verify(splash, resolveLoader()) != null) {
             log.info("recovery skipped reason=cacheVerificationFailed");
             return;
         }
@@ -456,6 +538,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
         if ("watchdog 20s deadline".equals(reason)) {
             markState(BootstrapState.DEGRADED);
+            cleanupTerminal();
             log.info("resolver watchdog deadline state=DEGRADED");
         }
     }
@@ -487,7 +570,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 return;
             }
             identity = TargetIdentity.compute(appContext);
-            trace.mark("stableIdentityComputed", identity.describe());
+            if (trace != null) {
+                trace.mark("stableIdentityComputed", identity.describe());
+            }
             log.info("coordinator stable identity: " + identity.describe());
         });
     }

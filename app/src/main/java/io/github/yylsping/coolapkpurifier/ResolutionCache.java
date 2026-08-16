@@ -19,14 +19,13 @@ import java.util.Map;
 /**
  * Multi-version resolver cache.
  *
- * <p>Stores up to {@link CachePolicy#MAX_ENTRIES} successful identities with
- * total bytes at most {@link CachePolicy#MAX_TOTAL_BYTES}. Entries are keyed
- * by stableTargetIdentity, never by versionCode. Reads never clear other
- * identity entries.
+ * <p>Stores at most {@link CachePolicy#MAX_ENTRIES} successful identities and
+ * the complete serialized JSON (including metadata and recovery markers) is
+ * never larger than {@link CachePolicy#MAX_TOTAL_BYTES}. versionCode never
+ * participates in cache identity or validity.
  */
 final class ResolutionCache {
     static final int RESOLVER_SCHEMA_VERSION = 1;
-
     private static final String FILE_NAME = "coolapk_purifier_cache_v3.json";
 
     private final File file;
@@ -34,6 +33,11 @@ final class ResolutionCache {
 
     ResolutionCache(Context appContext) {
         this.file = new File(appContext.getFilesDir(), FILE_NAME);
+        File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+        if (temp.isFile()) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+        }
     }
 
     Map<String, ResolvedTarget> loadTargets(TargetIdentity identity) {
@@ -60,11 +64,11 @@ final class ResolutionCache {
         }
     }
 
-    void markRecoveryAttempted(TargetIdentity identity) {
+    boolean markRecoveryAttempted(TargetIdentity identity) {
         synchronized (lock) {
             try {
                 JSONObject root = readJson();
-                if (root == null) {
+                if (root == null || root.optInt("schema", 0) != RESOLVER_SCHEMA_VERSION) {
                     root = new JSONObject();
                     root.put("schema", RESOLVER_SCHEMA_VERSION);
                     root.put("entries", new JSONArray());
@@ -74,18 +78,21 @@ final class ResolutionCache {
                     recovered = new JSONArray();
                     root.put("recoveryAttempted", recovered);
                 }
-                boolean exists = false;
-                for (int i = 0; i < recovered.length(); i++) {
-                    if (identity.token.equals(recovered.optString(i, null))) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
+                if (!containsToken(recovered, identity.token)) {
                     recovered.put(identity.token);
+                    trimRecoveryMarkers(recovered);
                 }
-                writeJson(root);
+                if (!writeJson(root, identity.token)) {
+                    return false;
+                }
+                JSONObject reread = readJson();
+                if (reread == null) {
+                    return false;
+                }
+                JSONArray persisted = reread.optJSONArray("recoveryAttempted");
+                return persisted != null && containsToken(persisted, identity.token);
             } catch (Throwable ignored) {
+                return false;
             }
         }
     }
@@ -94,40 +101,33 @@ final class ResolutionCache {
         synchronized (lock) {
             try {
                 JSONObject root = readJson();
-                if (root == null) {
+                if (root == null || root.optInt("schema", 0) != RESOLVER_SCHEMA_VERSION) {
                     root = new JSONObject();
                     root.put("schema", RESOLVER_SCHEMA_VERSION);
                     root.put("entries", new JSONArray());
                 }
-                if (root.optInt("schema", 0) != RESOLVER_SCHEMA_VERSION) {
-                    root = new JSONObject();
-                    root.put("schema", RESOLVER_SCHEMA_VERSION);
-                    root.put("entries", new JSONArray());
-                }
-
                 JSONArray entries = root.optJSONArray("entries");
                 if (entries == null) {
                     entries = new JSONArray();
                     root.put("entries", entries);
                 }
-
-                JSONObject replacement = encodeEntry(identity, targets, System.currentTimeMillis());
+                JSONObject replacement =
+                        encodeEntry(identity, targets, System.currentTimeMillis());
                 JSONArray merged = new JSONArray();
                 merged.put(replacement);
                 for (int i = 0; i < entries.length(); i++) {
                     JSONObject candidate = entries.optJSONObject(i);
-                    TargetIdentity candidateIdentity =
-                            TargetIdentity.fromJson(candidate == null ? null
-                                    : candidate.optJSONObject("identity"));
+                    TargetIdentity candidateIdentity = TargetIdentity.fromJson(
+                            candidate == null ? null : candidate.optJSONObject("identity"));
                     if (candidateIdentity != null
                             && identity.token.equals(candidateIdentity.token)) {
                         continue;
                     }
                     merged.put(candidate);
                 }
-                entries = evictEntries(merged, identity.token);
-                root.put("entries", entries);
-                writeJson(root);
+                root.put("entries", merged);
+                trimRecoveryMarkers(root.optJSONArray("recoveryAttempted"));
+                writeJson(root, identity.token);
             } catch (Throwable ignored) {
             }
         }
@@ -148,9 +148,8 @@ final class ResolutionCache {
                 JSONArray kept = new JSONArray();
                 for (int i = 0; i < entries.length(); i++) {
                     JSONObject candidate = entries.optJSONObject(i);
-                    TargetIdentity candidateIdentity =
-                            TargetIdentity.fromJson(candidate == null ? null
-                                    : candidate.optJSONObject("identity"));
+                    TargetIdentity candidateIdentity = TargetIdentity.fromJson(
+                            candidate == null ? null : candidate.optJSONObject("identity"));
                     if (candidateIdentity != null
                             && identity.token.equals(candidateIdentity.token)) {
                         continue;
@@ -158,7 +157,7 @@ final class ResolutionCache {
                     kept.put(candidate);
                 }
                 root.put("entries", kept);
-                writeJson(root);
+                writeJson(root, identity.token);
             } catch (Throwable ignored) {
             }
         }
@@ -206,9 +205,8 @@ final class ResolutionCache {
             boolean changed = false;
             for (int i = 0; i < entries.length(); i++) {
                 JSONObject candidate = entries.optJSONObject(i);
-                TargetIdentity candidateIdentity =
-                        TargetIdentity.fromJson(candidate == null ? null
-                                : candidate.optJSONObject("identity"));
+                TargetIdentity candidateIdentity = TargetIdentity.fromJson(
+                        candidate == null ? null : candidate.optJSONObject("identity"));
                 if (candidateIdentity != null && identity.token.equals(candidateIdentity.token)
                         && oldLastUsedAt == candidate.optLong("lastUsedAt", 0L)) {
                     candidate.put("lastUsedAt", System.currentTimeMillis());
@@ -217,13 +215,61 @@ final class ResolutionCache {
                 }
             }
             if (changed) {
-                writeJson(root);
+                writeJson(root, identity.token);
             }
         } catch (Throwable ignored) {
         }
     }
 
-    private JSONArray evictEntries(JSONArray entries, String protectKey) throws JSONException {
+    /**
+     * Serializes the complete root, verifies the real UTF-8 byte size against
+     * the 1 MiB budget, evicts more entries if needed, then performs an atomic
+     * replace. Returns false when persistence was not safe.
+     */
+    private boolean writeJson(JSONObject root, String protectKey) {
+        try {
+            trimRecoveryMarkers(root.optJSONArray("recoveryAttempted"));
+            byte[] bytes = serialize(root);
+            if (bytes == null || bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
+                root.put("entries", evictForSize(root.optJSONArray("entries"), protectKey));
+                bytes = serialize(root);
+            }
+            if (bytes == null || bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
+                return false;
+            }
+            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+            try (FileOutputStream out = new FileOutputStream(temp)) {
+                out.write(bytes);
+                out.flush();
+                out.getFD().sync();
+            }
+            if (file.exists() && !file.delete() && file.length() > 0) {
+                return false;
+            }
+            if (!temp.renameTo(file)) {
+                try (OutputStream out = new FileOutputStream(file)) {
+                    out.write(bytes);
+                    out.flush();
+                }
+            }
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private byte[] serialize(JSONObject root) {
+        try {
+            return root.toString().getBytes(StandardCharsets.UTF_8);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private JSONArray evictForSize(JSONArray entries, String protectKey) throws JSONException {
+        if (entries == null) {
+            return new JSONArray();
+        }
         List<CachePolicy.Record> records = new ArrayList<>();
         for (int i = 0; i < entries.length(); i++) {
             JSONObject entry = entries.optJSONObject(i);
@@ -232,10 +278,9 @@ final class ResolutionCache {
             }
             String key = entry.optJSONObject("identity") == null ? ""
                     : entry.optJSONObject("identity").optString("token", "");
-            records.add(new CachePolicy.Record(
-                    key,
-                    entry.optLong("lastUsedAt", 0L),
-                    entry.toString().getBytes(StandardCharsets.UTF_8).length));
+            byte[] entryBytes = entry.toString().getBytes(StandardCharsets.UTF_8);
+            records.add(new CachePolicy.Record(key,
+                    entry.optLong("lastUsedAt", 0L), entryBytes.length));
         }
         List<CachePolicy.Record> kept = CachePolicy.evict(records, protectKey);
         JSONArray result = new JSONArray();
@@ -251,6 +296,32 @@ final class ResolutionCache {
             }
         }
         return result;
+    }
+
+    private void trimRecoveryMarkers(JSONArray recovered) {
+        if (recovered == null) {
+            return;
+        }
+        List<String> markers = new ArrayList<>();
+        for (int i = 0; i < recovered.length(); i++) {
+            markers.add(recovered.optString(i, ""));
+        }
+        markers = RecoveryPolicy.trim(markers);
+        while (recovered.length() > 0) {
+            recovered.remove(0);
+        }
+        for (String marker : markers) {
+            recovered.put(marker);
+        }
+    }
+
+    private static boolean containsToken(JSONArray array, String token) {
+        for (int i = 0; i < array.length(); i++) {
+            if (token.equals(array.optString(i, null))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private JSONObject encodeEntry(TargetIdentity identity,
@@ -287,7 +358,8 @@ final class ResolutionCache {
             return null;
         }
         try (FileInputStream in = new FileInputStream(file)) {
-            byte[] bytes = new byte[(int) Math.min(file.length(), CachePolicy.MAX_TOTAL_BYTES + 1)];
+            byte[] bytes = new byte[(int) Math.min(
+                    file.length(), CachePolicy.MAX_TOTAL_BYTES + 1L)];
             int offset = 0;
             while (offset < bytes.length) {
                 int read = in.read(bytes, offset, bytes.length - offset);
@@ -302,29 +374,6 @@ final class ResolutionCache {
             return new JSONObject(new String(bytes, 0, offset, StandardCharsets.UTF_8));
         } catch (Throwable ignored) {
             return null;
-        }
-    }
-
-    private void writeJson(JSONObject root) {
-        File temp = new File(file.getParentFile(), file.getName() + ".tmp");
-        try (FileOutputStream out = new FileOutputStream(temp)) {
-            out.write(root.toString().getBytes(StandardCharsets.UTF_8));
-            out.flush();
-            out.getFD().sync();
-        } catch (Throwable ignored) {
-            return;
-        }
-        try {
-            if (file.exists() && !file.delete() && file.length() > 0) {
-                return;
-            }
-            if (!temp.renameTo(file)) {
-                try (OutputStream out = new FileOutputStream(file)) {
-                    out.write(root.toString().getBytes(StandardCharsets.UTF_8));
-                    out.flush();
-                }
-            }
-        } catch (Throwable ignored) {
         }
     }
 

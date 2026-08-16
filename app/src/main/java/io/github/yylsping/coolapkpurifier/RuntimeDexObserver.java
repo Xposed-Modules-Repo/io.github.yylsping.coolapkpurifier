@@ -14,14 +14,14 @@ import io.github.libxposed.api.XposedModule;
  */
 final class RuntimeDexObserver {
     interface Listener {
-        void onRuntimeDexReady(String trigger);
+        void onRuntimeDexReady(String trigger, ClassLoader runtimeClassLoader);
     }
 
     private final XposedModule module;
     private final ModuleLog log;
     private final Listener listener;
     private final List<HookHandle> handles = new ArrayList<>();
-    private volatile boolean ready;
+    private boolean armed;
 
     RuntimeDexObserver(XposedModule module, ModuleLog log, Listener listener) {
         this.module = module;
@@ -30,8 +30,11 @@ final class RuntimeDexObserver {
     }
 
     void install() throws ReflectiveOperationException {
-        if (ready) {
-            return;
+        synchronized (this) {
+            if (armed || !handles.isEmpty()) {
+                return;
+            }
+            armed = true;
         }
         Method oneArg = ClassLoader.class.getDeclaredMethod("loadClass", String.class);
         Method twoArgs = ClassLoader.class.getDeclaredMethod(
@@ -55,38 +58,52 @@ final class RuntimeDexObserver {
         log.info("runtime dex observer installed");
     }
 
-    private void onResult(Object result) {
-        if (ready || !(result instanceof Class<?>)) {
-            return;
-        }
-        String name = ((Class<?>) result).getName();
-        if (!isBusinessClass(name)) {
-            return;
-        }
+    /** Re-arm after a retryable miss so a later loader generation can retry. */
+    void rearm() {
         synchronized (this) {
-            if (ready) {
-                return;
-            }
-            ready = true;
+            armed = true;
         }
-        close();
-        log.info("runtime dex ready trigger=loadClass class=" + name);
-        listener.onRuntimeDexReady("loadClass:" + name);
+        if (handles.isEmpty()) {
+            try {
+                install();
+            } catch (Throwable throwable) {
+                log.error("runtime dex observer rearm failed", throwable);
+            }
+        }
     }
 
-    void notifyFirstActivityPre() {
-        if (ready) {
+    private void onResult(Object result) {
+        if (!(result instanceof Class<?>)) {
+            return;
+        }
+        Class<?> loadedClass = (Class<?>) result;
+        if (!isBusinessClass(loadedClass.getName())) {
             return;
         }
         synchronized (this) {
-            if (ready) {
+            if (!armed) {
                 return;
             }
-            ready = true;
+            armed = false;
+        }
+        ClassLoader loader = loadedClass.getClassLoader();
+        close();
+        log.info("runtime dex ready trigger=loadClass class=" + loadedClass.getName()
+                + " loaderIdentity=" + System.identityHashCode(loader));
+        listener.onRuntimeDexReady("loadClass:" + loadedClass.getName(), loader);
+    }
+
+    void notifyFirstActivityPre(ClassLoader activityLoader) {
+        synchronized (this) {
+            if (!armed) {
+                return;
+            }
+            armed = false;
         }
         close();
-        log.info("runtime dex ready trigger=firstActivityPre");
-        listener.onRuntimeDexReady("firstActivityPre");
+        log.info("runtime dex ready trigger=firstActivityPre loaderIdentity="
+                + System.identityHashCode(activityLoader));
+        listener.onRuntimeDexReady("firstActivityPre", activityLoader);
     }
 
     void close() {

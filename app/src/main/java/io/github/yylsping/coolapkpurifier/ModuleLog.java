@@ -19,7 +19,12 @@ final class ModuleLog {
     }
 
     void error(String message, Throwable throwable) {
-        Log.e(TAG, message, throwable);
-        module.log(Log.ERROR, TAG, message, throwable);
+        if (throwable == null) {
+            Log.e(TAG, message);
+            module.log(Log.ERROR, TAG, message);
+        } else {
+            Log.e(TAG, message, throwable);
+            module.log(Log.ERROR, TAG, message, throwable);
+        }
     }
 }

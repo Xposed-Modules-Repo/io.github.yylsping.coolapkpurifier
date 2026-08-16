@@ -33,10 +33,18 @@ final class DexKitSession {
         return generation.get();
     }
 
-    void notifyLoaderGenerationChanged() {
+    long getLoaderIdentity() {
+        return System.identityHashCode(loader);
+    }
+
+    void notifyLoaderGenerationChanged(String reason) {
         generation.incrementAndGet();
-        trace("loaderGeneration", "generation=" + generation.get()
-                + " loaderIdentity=" + System.identityHashCode(loader));
+        trace("loaderGeneration", "reason=" + reason
+                + " generation=" + generation.get()
+                + " loaderIdentity=" + getLoaderIdentity());
+        log.info("resolver loaderGeneration reason=" + reason
+                + " generation=" + generation.get()
+                + " loaderIdentity=" + getLoaderIdentity());
     }
 
     DexKitBridge ensureBridge(String trigger) {
