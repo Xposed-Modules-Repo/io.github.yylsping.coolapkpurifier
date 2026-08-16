@@ -9,3 +9,10 @@
 -keep,allowobfuscation class io.github.yylsping.coolapkpurifier.** {
     *;
 }
+
+# DexKit is loaded from a dynamically extracted native library. Keep all of
+# its descriptors because JNI registration and FlatBuffers query classes are
+# referenced reflectively/natively.
+-keep class org.luckypray.dexkit.** { *; }
+-keep class com.google.flatbuffers.** { *; }
+-dontwarn org.luckypray.dexkit.**

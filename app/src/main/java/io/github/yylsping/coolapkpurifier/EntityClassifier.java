@@ -3,21 +3,28 @@ package io.github.yylsping.coolapkpurifier;
 import java.util.Locale;
 
 final class EntityClassifier {
-    private final EntityAccessorCache accessorCache;
+    private volatile EntityAccessors accessors;
 
-    EntityClassifier(EntityAccessorCache accessorCache) {
-        this.accessorCache = accessorCache;
+    EntityClassifier() {
+    }
+
+    void setAccessors(EntityAccessors accessors) {
+        this.accessors = accessors;
     }
 
     boolean isSponsored(Object entity) {
         if (entity == null) {
             return false;
         }
-        EntityAccessors accessors = accessorCache.get(entity.getClass());
-        String template = accessors.readTemplate(entity).toLowerCase(Locale.ROOT);
-        String entityId = accessors.readEntityId(entity).toLowerCase(Locale.ROOT);
-        String title = accessors.readTitle(entity).toLowerCase(Locale.ROOT);
-        String entityType = accessors.readEntityType(entity).toLowerCase(Locale.ROOT);
+        EntityAccessors resolved = accessors;
+        if (resolved == null) {
+            // No verified getters: fail closed and keep the original list.
+            return false;
+        }
+        String template = resolved.readTemplate(entity).toLowerCase(Locale.ROOT);
+        String entityId = resolved.readEntityId(entity).toLowerCase(Locale.ROOT);
+        String title = resolved.readTitle(entity).toLowerCase(Locale.ROOT);
+        String entityType = resolved.readEntityType(entity).toLowerCase(Locale.ROOT);
 
         String fingerprint = template + '\n' + entityId + '\n' + title;
         return fingerprint.contains("sponsor")

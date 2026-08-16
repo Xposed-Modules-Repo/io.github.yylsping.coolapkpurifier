@@ -1,6 +1,7 @@
 package io.github.yylsping.coolapkpurifier;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 
 final class EntityAccessors {
     private final Method template;
@@ -13,6 +14,14 @@ final class EntityAccessors {
         this.entityId = entityId;
         this.title = title;
         this.entityType = entityType;
+    }
+
+    static EntityAccessors fromTargets(Map<String, ResolvedTarget> targets, ClassLoader loader) {
+        return new EntityAccessors(
+                loadMethod(targets.get(TargetResolver.KEY_GETTER_TEMPLATE), loader),
+                loadMethod(targets.get(TargetResolver.KEY_GETTER_ENTITY_ID), loader),
+                loadMethod(targets.get(TargetResolver.KEY_GETTER_TITLE), loader),
+                loadMethod(targets.get(TargetResolver.KEY_GETTER_ENTITY_TYPE), loader));
     }
 
     String readTemplate(Object instance) {
@@ -29,6 +38,13 @@ final class EntityAccessors {
 
     String readEntityType(Object instance) {
         return invoke(entityType, instance);
+    }
+
+    private static Method loadMethod(ResolvedTarget target, ClassLoader loader) {
+        if (target == null || target.methodDescriptor == null || target.methodDescriptor.isEmpty()) {
+            return null;
+        }
+        return DescriptorUtils.methodForDescriptor(target.methodDescriptor, loader);
     }
 
     private static String invoke(Method method, Object instance) {

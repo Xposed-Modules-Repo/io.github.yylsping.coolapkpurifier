@@ -34,3 +34,7 @@ reference/decompiled/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local reverse-engineering workspace and user-supplied APK corpus
+analysis/
+history-apks/

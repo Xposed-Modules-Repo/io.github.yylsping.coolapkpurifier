@@ -1,42 +1,34 @@
 package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import android.content.Context;
+import android.os.AsyncTask;
+import android.os.Handler;
+import android.os.Looper;
 
-import io.github.libxposed.api.XposedInterface.ExceptionMode;
+import java.lang.reflect.Method;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import io.github.libxposed.api.XposedInterface.HookHandle;
 import io.github.libxposed.api.XposedModule;
 
 final class HookCoordinator {
-    private static final String SPLASH_BASE = "com.coolapk.market.view.splash.Ϳ";
-    private static final String ENTITY_AD_HELPER = "com.coolapk.market.view.ad.EntityAdHelper";
-    private static final String ENTITY_LIST_FRAGMENT = "com.coolapk.market.view.cardlist.EntityListFragment";
-    private static final long WATCHER_TIMEOUT_MILLIS = 15_000L;
+    private static final long RESOLVE_DEADLINE_MILLIS = 20_000L;
 
-    private final Object installLock = new Object();
     private final XposedModule module;
     private final ModuleLog log;
     private final ClassLoader primaryLoader;
     private final SplashHooks splashHooks;
     private final EntityListHooks entityListHooks;
-    private final List<HookHandle> classLoadHandles = new ArrayList<>();
-    private final ScheduledExecutorService retryExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "CoolapkAdBlock-Resolver");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean attemptRunning = new AtomicBoolean();
 
-    private InstallState splashState = InstallState.UNINSTALLED;
-    private InstallState adHelperState = InstallState.UNINSTALLED;
-    private InstallState listFragmentState = InstallState.UNINSTALLED;
-    private boolean watcherInstalled;
-    private boolean watcherStopped;
-    private boolean mainActivitySeen;
+    private volatile TargetResolver resolver;
+    private volatile Context appContext;
+    private volatile Method installedFeedMethod;
+    private volatile String installedSplashClass;
+    private volatile boolean resolverStopped;
 
     HookCoordinator(XposedModule module, ModuleLog log, ClassLoader primaryLoader) {
         this.module = module;
@@ -47,205 +39,143 @@ final class HookCoordinator {
     }
 
     void install() throws ReflectiveOperationException {
+        // Framework fallback is installed synchronously so an early splash is
+        // handled even before the first DexKit scan completes.
         splashHooks.installInstrumentationFallback();
-        synchronized (installLock) {
-            tryInstallTargets(primaryLoader);
-            if (!allRuntimeTargetsInstalled()) {
-                installTemporaryClassLoadWatcher();
-                scheduleBoundedResolution();
-            }
-        }
+        scheduleAttempt("0.5 second probe", 500L);
+        scheduleAttempt("1.5 second probe", 1_500L);
+        scheduleAttempt("5 second probe", 5_000L);
+        scheduleAttempt("10 second probe", 10_000L);
+        mainHandler.postDelayed(this::stopAtDeadline, RESOLVE_DEADLINE_MILLIS);
     }
 
-    private void scheduleBoundedResolution() {
-        // The protected Coolapk APK appends its real DEX to the same PathClassLoader after
-        // onPackageReady. Two background probes cover that transition without main-thread
-        // polling; the temporary watcher is still the fast path when loadClass is observable.
-        retryExecutor.schedule(() -> retryResolve("1.5 second probe"), 1_500L, TimeUnit.MILLISECONDS);
-        retryExecutor.schedule(() -> retryResolve("5 second probe"), 5_000L, TimeUnit.MILLISECONDS);
-        retryExecutor.schedule(this::stopWatcherAtDeadline, WATCHER_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
-    }
-
-    private void retryResolve(String source) {
-        synchronized (installLock) {
-            if (watcherStopped) {
+    private void scheduleAttempt(String label, long delayMillis) {
+        mainHandler.postDelayed(() -> {
+            if (resolverStopped) {
                 return;
             }
-            tryInstallTargets(primaryLoader);
-            maybeStopWatcher();
-            if (allRuntimeTargetsInstalled()) {
-                log.info("runtime targets resolved by " + source);
+            log.info("coordinator resolution attempt: " + label);
+            runAttempt(label);
+        }, delayMillis);
+    }
+
+    private void runAttempt(String label) {
+        if (resolverStopped || !attemptRunning.compareAndSet(false, true)) {
+            log.info("coordinator resolution attempt skipped: " + label
+                    + " running=" + attemptRunning.get() + " stopped=" + resolverStopped);
+            return;
+        }
+        AsyncTask.THREAD_POOL_EXECUTOR.execute(() -> {
+            try {
+                ensureResolver();
+                log.info("coordinator ensureResolver done resolver="
+                        + (resolver == null ? "null" : resolver.getClass().getName()));
+                TargetResolver targetResolver = resolver;
+                if (targetResolver == null) {
+                    log.info("coordinator resolution skipped: target app context is not ready");
+                    return;
+                }
+                log.info("coordinator calling resolver.attempt");
+                targetResolver.attempt();
+                log.info("coordinator resolver.attempt returned");
+                applyResolved(targetResolver.getResolved());
+                if (targetResolver.areRequiredTargetsResolved()) {
+                    stopResolver("required targets resolved via " + label);
+                }
+            } catch (Throwable throwable) {
+                log.error("coordinator resolution attempt failed", throwable);
+            } finally {
+                attemptRunning.set(false);
+            }
+        });
+    }
+
+    private void ensureResolver() {
+        if (resolver != null) {
+            return;
+        }
+        if (appContext == null) {
+            appContext = currentApplication();
+        }
+        if (appContext == null) {
+            return;
+        }
+        resolver = new TargetResolver(log, primaryLoader, appContext);
+    }
+
+    private void applyResolved(Map<String, ResolvedTarget> targets) {
+        entityListHooks.updateAccessors(targets, primaryLoader);
+
+        ResolvedTarget feed = targets.get(TargetResolver.KEY_FEED);
+        if (feed != null && installedFeedMethod == null) {
+            Method method = DescriptorUtils.methodForDescriptor(feed.methodDescriptor, primaryLoader);
+            if (method != null) {
+                entityListHooks.install(method);
+                installedFeedMethod = method;
+            } else {
+                log.info("coordinator feed descriptor not loadable yet: " + feed.describe());
+            }
+        }
+
+        ResolvedTarget splash = targets.get(TargetResolver.KEY_SPLASH_BASE);
+        if (splash != null && installedSplashClass == null) {
+            try {
+                Class<?> type = DescriptorUtils.classForName(splash.classDescriptor, primaryLoader);
+                if (type != null) {
+                    splashHooks.setResolvedSplashBase(type);
+                    splashHooks.installSpecific(type);
+                    installedSplashClass = type.getName();
+                }
+            } catch (Throwable throwable) {
+                log.info("coordinator splash descriptor not loadable yet: " + splash.describe());
             }
         }
     }
 
     private void onActivityCreated(Activity activity) {
-        if (activity == null) {
+        if (activity == null || resolverStopped) {
             return;
         }
-        String name = activity.getClass().getName();
-        synchronized (installLock) {
-            if (SplashHooks.MAIN_ACTIVITY.equals(name)) {
-                mainActivitySeen = true;
-            }
-            tryInstallTargets(activity.getClass().getClassLoader());
-            maybeStopWatcher();
-        }
-    }
-
-    private void onClassLoaded(Class<?> loadedClass) {
-        String name = loadedClass.getName();
-        synchronized (installLock) {
-            if (SPLASH_BASE.equals(name) && splashState.needsAttempt()) {
-                installSplashClass(loadedClass);
-            } else if (ENTITY_AD_HELPER.equals(name) && adHelperState.needsAttempt()) {
-                adHelperState = installEntityClass(loadedClass, ENTITY_AD_HELPER);
-            } else if (ENTITY_LIST_FRAGMENT.equals(name) && listFragmentState.needsAttempt()) {
-                listFragmentState = installEntityClass(loadedClass, ENTITY_LIST_FRAGMENT);
-            }
-            maybeStopWatcher();
-        }
-    }
-
-    private void tryInstallTargets(ClassLoader loader) {
-        if (loader == null) {
-            return;
-        }
-        if (splashState.needsAttempt()) {
-            Class<?> type = findLoadedClass(SPLASH_BASE, loader);
-            if (type != null) {
-                installSplashClass(type);
-            }
-        }
-        if (adHelperState.needsAttempt()) {
-            Class<?> type = findLoadedClass(ENTITY_AD_HELPER, loader);
-            if (type != null) {
-                adHelperState = installEntityClass(type, ENTITY_AD_HELPER);
-            }
-        }
-        if (listFragmentState.needsAttempt()) {
-            Class<?> type = findLoadedClass(ENTITY_LIST_FRAGMENT, loader);
-            if (type != null) {
-                listFragmentState = installEntityClass(type, ENTITY_LIST_FRAGMENT);
-            }
-        }
-    }
-
-    private void installSplashClass(Class<?> type) {
-        splashState = InstallState.INSTALLING;
         try {
-            splashState = splashHooks.installSpecific(type)
-                    ? InstallState.INSTALLED
-                    : InstallState.UNAVAILABLE;
+            if (resolver != null) {
+                applyResolved(resolver.getResolved());
+            }
         } catch (Throwable throwable) {
-            splashState = InstallState.FAILED_RETRYABLE;
-            log.error("specific splash hook failed", throwable);
+            log.error("coordinator activity resolution failed", throwable);
         }
+        // Activities are created on the main thread and the protected DEX is
+        // always loaded by then, so this is a reliable extra trigger.
+        runAttempt("activity-created");
     }
 
-    private InstallState installEntityClass(Class<?> type, String label) {
-        try {
-            int count = entityListHooks.install(type);
-            if (count == 0) {
-                log.info("no compatible list transformer in " + label);
-                return InstallState.UNAVAILABLE;
-            }
-            log.info("installed " + count + " list hook(s) in " + label);
-            return InstallState.INSTALLED;
-        } catch (Throwable throwable) {
-            log.error("list hook installation failed for " + label, throwable);
-            return InstallState.FAILED_RETRYABLE;
-        }
-    }
-
-    private void installTemporaryClassLoadWatcher() throws ReflectiveOperationException {
-        if (watcherInstalled || watcherStopped) {
+    private void stopResolver(String reason) {
+        if (resolverStopped) {
             return;
         }
-        Method oneArg = ClassLoader.class.getDeclaredMethod("loadClass", String.class);
-        Method twoArgs = ClassLoader.class.getDeclaredMethod("loadClass", String.class, boolean.class);
-        classLoadHandles.add(module.hook(oneArg)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .setId("coolapk-classload-1")
-                .intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (result instanceof Class<?>) {
-                        onClassLoaded((Class<?>) result);
-                    }
-                    return result;
-                }));
-        classLoadHandles.add(module.hook(twoArgs)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .setId("coolapk-classload-2")
-                .intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (result instanceof Class<?>) {
-                        onClassLoaded((Class<?>) result);
-                    }
-                    return result;
-                }));
-        watcherInstalled = true;
-        log.info("temporary ClassLoader watcher installed");
+        resolverStopped = true;
+        TargetResolver targetResolver = resolver;
+        log.info("coordinator resolver stopped: " + reason
+                + " feedInstalled=" + (installedFeedMethod != null)
+                + " splashInstalled=" + (installedSplashClass != null)
+                + " resolved=" + (targetResolver == null ? "{}" : targetResolver.getResolved().keySet()));
+        mainHandler.removeCallbacksAndMessages(null);
     }
 
-    private void maybeStopWatcher() {
-        if (watcherInstalled && adHelperState.isTerminal() && listFragmentState.isTerminal()
-                && (splashState.isTerminal() || mainActivitySeen)) {
-            stopWatcher("targets resolved");
-        }
+    private void stopAtDeadline() {
+        stopResolver(RESOLVE_DEADLINE_MILLIS + " ms deadline");
     }
 
-    private void stopWatcherAtDeadline() {
-        synchronized (installLock) {
-            stopWatcher("15 second deadline");
-        }
-    }
-
-    private void stopWatcher(String reason) {
-        if (!watcherInstalled || watcherStopped) {
-            return;
-        }
-        watcherStopped = true;
-        watcherInstalled = false;
-        for (HookHandle handle : classLoadHandles) {
-            try {
-                handle.unhook();
-            } catch (Throwable throwable) {
-                log.error("unable to remove class-load watcher", throwable);
-            }
-        }
-        classLoadHandles.clear();
-        retryExecutor.shutdownNow();
-        log.info("temporary ClassLoader watcher removed: " + reason);
-    }
-
-    private boolean allRuntimeTargetsInstalled() {
-        return splashState == InstallState.INSTALLED
-                && adHelperState == InstallState.INSTALLED
-                && listFragmentState == InstallState.INSTALLED;
-    }
-
-    private static Class<?> findLoadedClass(String name, ClassLoader loader) {
+    private static Context currentApplication() {
         try {
-            return Class.forName(name, false, loader);
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Object instance = activityThread.getMethod("currentActivityThread").invoke(null);
+            if (instance == null) {
+                return null;
+            }
+            Object application = activityThread.getMethod("currentApplication").invoke(instance);
+            return application instanceof Context ? (Context) application : null;
         } catch (Throwable ignored) {
             return null;
-        }
-    }
-
-    private enum InstallState {
-        UNINSTALLED,
-        INSTALLING,
-        INSTALLED,
-        FAILED_RETRYABLE,
-        UNAVAILABLE;
-
-        boolean needsAttempt() {
-            return this == UNINSTALLED || this == FAILED_RETRYABLE;
-        }
-
-        boolean isTerminal() {
-            return this == INSTALLED || this == UNAVAILABLE;
         }
     }
 }

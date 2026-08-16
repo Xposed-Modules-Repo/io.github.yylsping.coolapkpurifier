@@ -17,9 +17,13 @@ import io.github.libxposed.api.XposedModule;
 final class SplashHooks {
     static final String MAIN_ACTIVITY = "com.coolapk.market.view.main.MainActivity";
 
-    private static final String SPLASH_ACTIVITY = "com.coolapk.market.view.splash.SplashActivity";
-    private static final String FULL_SCREEN_AD_ACTIVITY = "com.coolapk.market.view.splash.FullScreenAdActivity";
-    private static final int MAIN_INTENT_FLAGS = Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP;
+    // Legacy compatibility names retained only as the last fallback predicate.
+    private static final String LEGACY_SPLASH_ACTIVITY = "com.coolapk.market.view.splash.SplashActivity";
+    private static final String LEGACY_FULL_SCREEN_AD_ACTIVITY =
+            "com.coolapk.market.view.splash.FullScreenAdActivity";
+    private static final String SPLASH_PACKAGE = "com.coolapk.market.view.splash";
+    private static final int MAIN_INTENT_FLAGS =
+            Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP;
 
     interface ActivityObserver {
         void onActivityCreated(Activity activity);
@@ -29,11 +33,16 @@ final class SplashHooks {
     private final ModuleLog log;
     private final ActivityObserver observer;
     private final List<HookHandle> handles = new ArrayList<>();
+    private volatile Class<?> resolvedSplashBase;
 
     SplashHooks(XposedModule module, ModuleLog log, ActivityObserver observer) {
         this.module = module;
         this.log = log;
         this.observer = observer;
+    }
+
+    void setResolvedSplashBase(Class<?> resolvedSplashBase) {
+        this.resolvedSplashBase = resolvedSplashBase;
     }
 
     void installInstrumentationFallback() throws ReflectiveOperationException {
@@ -87,7 +96,7 @@ final class SplashHooks {
             count++;
         }
         if (count > 0) {
-            log.info("specific splash hook installed");
+            log.info("specific splash hook installed class=" + splashBase.getName());
         }
         return count > 0;
     }
@@ -95,7 +104,7 @@ final class SplashHooks {
     private void finishSplash(Activity activity, String source) {
         try {
             String className = activity.getClass().getName();
-            if (!isSplashActivity(className) || activity.isFinishing()) {
+            if (!isSplashActivity(activity) || activity.isFinishing()) {
                 return;
             }
             if (activity.isTaskRoot()) {
@@ -105,13 +114,44 @@ final class SplashHooks {
                 activity.startActivity(intent);
             }
             activity.finish();
-            log.info("finished splash via " + source + ": " + className);
+            log.info("finished splash via " + source + ": " + className
+                    + " (resolvedBase=" + (resolvedSplashBase == null
+                    ? "null" : resolvedSplashBase.getName()) + ")");
         } catch (Throwable throwable) {
             log.error("unable to finish splash", throwable);
         }
     }
 
-    private static boolean isSplashActivity(String name) {
-        return SPLASH_ACTIVITY.equals(name) || FULL_SCREEN_AD_ACTIVITY.equals(name);
+    private boolean isSplashActivity(Activity activity) {
+        String name = activity.getClass().getName();
+        Class<?> base = resolvedSplashBase;
+        if (base != null && base.isAssignableFrom(activity.getClass())) {
+            return true;
+        }
+        if (SPLASH_PACKAGE.equals(packageNameOf(activity.getClass()))) {
+            String simpleName = simpleNameOf(activity.getClass());
+            if (simpleName != null
+                    && (simpleName.contains("Splash")
+                    || simpleName.contains("FullScreenAd"))) {
+                return true;
+            }
+        }
+        return LEGACY_SPLASH_ACTIVITY.equals(name) || LEGACY_FULL_SCREEN_AD_ACTIVITY.equals(name);
+    }
+
+    private static String packageNameOf(Class<?> type) {
+        Package pkg = type.getPackage();
+        if (pkg != null) {
+            return pkg.getName();
+        }
+        String name = type.getName();
+        int lastDot = name.lastIndexOf('.');
+        return lastDot < 0 ? name : name.substring(0, lastDot);
+    }
+
+    private static String simpleNameOf(Class<?> type) {
+        String name = type.getName();
+        int lastDot = name.lastIndexOf('.');
+        return lastDot < 0 ? name : name.substring(lastDot + 1);
     }
 }

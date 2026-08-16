@@ -14,10 +14,12 @@ final class ModuleLog {
     }
 
     void info(String message) {
+        Log.i(TAG, message);
         module.log(Log.INFO, TAG, message);
     }
 
     void error(String message, Throwable throwable) {
+        Log.e(TAG, message, throwable);
         module.log(Log.ERROR, TAG, message, throwable);
     }
 }

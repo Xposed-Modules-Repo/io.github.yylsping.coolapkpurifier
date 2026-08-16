@@ -5,6 +5,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Method;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -13,15 +15,22 @@ import org.junit.Before;
 import org.junit.Test;
 
 public final class EntityListFilterTest {
-    private EntityAccessorCache cache;
     private EntityClassifier classifier;
     private EntityListFilter filter;
 
     @Before
-    public void setUp() {
-        cache = new EntityAccessorCache();
-        classifier = new EntityClassifier(cache);
+    public void setUp() throws Exception {
+        classifier = new EntityClassifier();
+        classifier.setAccessors(new EntityAccessors(
+                method("getEntityTemplate"),
+                method("getEntityId"),
+                method("getTitle"),
+                method("getEntityType")));
         filter = new EntityListFilter(classifier);
+    }
+
+    private static Method method(String name) throws Exception {
+        return Entity.class.getMethod(name);
     }
 
     @Test
@@ -44,13 +53,12 @@ public final class EntityListFilterTest {
     }
 
     @Test
-    public void noAdReturnsTheOriginalListAndCachesOncePerClass() {
+    public void noAdReturnsTheOriginalList() {
         List<Entity> source = Arrays.asList(
                 new Entity("feed", "1", "one", "feed"),
                 new Entity("reply", "2", "two", "reply"));
 
         assertSame(source, filter.filter(source));
-        assertEquals(1, cache.size());
     }
 
     @Test
