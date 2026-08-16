@@ -181,9 +181,18 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     @Override
     public void onRuntimeDexReady(String trigger) {
         runtimeReadyAt = SystemClock.elapsedRealtime();
-        traceAfterContext("runtimeDexReady", "trigger=" + trigger);
-        dexKitSession = new DexKitSession(log, trace, primaryLoader);
-        dexKitSession.notifyLoaderGenerationChanged();
+        if (appContext == null) {
+            appContext = currentApplication();
+        }
+        if (appContext != null && trace == null) {
+            trace = new BootstrapTrace(appContext);
+        }
+        traceAfterContext("runtimeDexReady", "trigger=" + trigger
+                + " loaderIdentity=" + System.identityHashCode(primaryLoader));
+        if (dexKitSession == null && trace != null) {
+            dexKitSession = new DexKitSession(log, trace, primaryLoader);
+            dexKitSession.notifyLoaderGenerationChanged();
+        }
         markState(BootstrapState.CACHE_VERIFY);
         log.info("coordinator runtimeDexReady trigger=" + trigger
                 + " loaderIdentity=" + System.identityHashCode(primaryLoader));
