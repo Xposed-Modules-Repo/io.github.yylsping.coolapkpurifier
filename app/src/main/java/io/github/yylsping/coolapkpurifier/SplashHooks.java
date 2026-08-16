@@ -17,32 +17,26 @@ import io.github.libxposed.api.XposedModule;
 final class SplashHooks {
     static final String MAIN_ACTIVITY = "com.coolapk.market.view.main.MainActivity";
 
-    // Legacy compatibility names retained only as the last fallback predicate.
-    private static final String LEGACY_SPLASH_ACTIVITY = "com.coolapk.market.view.splash.SplashActivity";
-    private static final String LEGACY_FULL_SCREEN_AD_ACTIVITY =
-            "com.coolapk.market.view.splash.FullScreenAdActivity";
-    private static final String SPLASH_PACKAGE = "com.coolapk.market.view.splash";
     private static final int MAIN_INTENT_FLAGS =
             Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP;
 
     interface ActivityObserver {
-        void onActivityCreated(Activity activity);
+        void onPreActivityCreate(Activity activity);
+
+        void onPostActivityCreate(Activity activity);
+
+        boolean shouldFinishSplash(Activity activity);
     }
 
     private final XposedModule module;
     private final ModuleLog log;
     private final ActivityObserver observer;
     private final List<HookHandle> handles = new ArrayList<>();
-    private volatile Class<?> resolvedSplashBase;
 
     SplashHooks(XposedModule module, ModuleLog log, ActivityObserver observer) {
         this.module = module;
         this.log = log;
         this.observer = observer;
-    }
-
-    void setResolvedSplashBase(Class<?> resolvedSplashBase) {
-        this.resolvedSplashBase = resolvedSplashBase;
     }
 
     void installInstrumentationFallback() throws ReflectiveOperationException {
@@ -52,7 +46,7 @@ final class SplashHooks {
                 "callActivityOnCreate", Activity.class, Bundle.class, PersistableBundle.class);
         installInstrumentationMethod(regular, "coolapk-activity-create-2");
         installInstrumentationMethod(persistent, "coolapk-activity-create-3");
-        log.info("Instrumentation splash fallback installed");
+        log.info("Instrumentation bootstrap hooks installed (pre/post split)");
     }
 
     private void installInstrumentationMethod(Method method, String id) {
@@ -60,12 +54,17 @@ final class SplashHooks {
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .setId(id)
                 .intercept(chain -> {
-                    Object result = chain.proceed();
                     Object candidate = chain.getArg(0);
-                    if (candidate instanceof Activity) {
-                        Activity activity = (Activity) candidate;
-                        observer.onActivityCreated(activity);
-                        finishSplash(activity, "instrumentation");
+                    Activity activity = candidate instanceof Activity ? (Activity) candidate : null;
+                    if (activity != null) {
+                        observer.onPreActivityCreate(activity);
+                    }
+                    Object result = chain.proceed();
+                    if (activity != null) {
+                        observer.onPostActivityCreate(activity);
+                        if (observer.shouldFinishSplash(activity)) {
+                            finishSplash(activity, "instrumentation");
+                        }
                     }
                     return result;
                 });
@@ -87,7 +86,8 @@ final class SplashHooks {
                     .intercept(chain -> {
                         Object result = chain.proceed();
                         Object thisObject = chain.getThisObject();
-                        if (thisObject instanceof Activity) {
+                        if (thisObject instanceof Activity
+                                && observer.shouldFinishSplash((Activity) thisObject)) {
                             finishSplash((Activity) thisObject, "specific");
                         }
                         return result;
@@ -103,10 +103,10 @@ final class SplashHooks {
 
     private void finishSplash(Activity activity, String source) {
         try {
-            String className = activity.getClass().getName();
-            if (!isSplashActivity(activity) || activity.isFinishing()) {
+            if (activity.isFinishing()) {
                 return;
             }
+            String className = activity.getClass().getName();
             if (activity.isTaskRoot()) {
                 Intent intent = new Intent();
                 intent.setClassName(CoolapkModule.TARGET_PACKAGE, MAIN_ACTIVITY);
@@ -114,44 +114,9 @@ final class SplashHooks {
                 activity.startActivity(intent);
             }
             activity.finish();
-            log.info("finished splash via " + source + ": " + className
-                    + " (resolvedBase=" + (resolvedSplashBase == null
-                    ? "null" : resolvedSplashBase.getName()) + ")");
+            log.info("finished splash via " + source + ": " + className);
         } catch (Throwable throwable) {
             log.error("unable to finish splash", throwable);
         }
-    }
-
-    private boolean isSplashActivity(Activity activity) {
-        String name = activity.getClass().getName();
-        Class<?> base = resolvedSplashBase;
-        if (base != null && base.isAssignableFrom(activity.getClass())) {
-            return true;
-        }
-        if (SPLASH_PACKAGE.equals(packageNameOf(activity.getClass()))) {
-            String simpleName = simpleNameOf(activity.getClass());
-            if (simpleName != null
-                    && (simpleName.contains("Splash")
-                    || simpleName.contains("FullScreenAd"))) {
-                return true;
-            }
-        }
-        return LEGACY_SPLASH_ACTIVITY.equals(name) || LEGACY_FULL_SCREEN_AD_ACTIVITY.equals(name);
-    }
-
-    private static String packageNameOf(Class<?> type) {
-        Package pkg = type.getPackage();
-        if (pkg != null) {
-            return pkg.getName();
-        }
-        String name = type.getName();
-        int lastDot = name.lastIndexOf('.');
-        return lastDot < 0 ? name : name.substring(0, lastDot);
-    }
-
-    private static String simpleNameOf(Class<?> type) {
-        String name = type.getName();
-        int lastDot = name.lastIndexOf('.');
-        return lastDot < 0 ? name : name.substring(lastDot + 1);
     }
 }

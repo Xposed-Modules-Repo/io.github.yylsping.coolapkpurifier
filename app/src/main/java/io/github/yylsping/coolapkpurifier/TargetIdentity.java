@@ -3,6 +3,9 @@ package io.github.yylsping.coolapkpurifier;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.Signature;
+import android.content.pm.SigningInfo;
+import android.os.Build;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -12,40 +15,48 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /**
- * Identity of the target APK. A cache entry is only valid while every value
- * below still matches the APK currently installed for com.coolapk.market.
+ * Stable target-code identity.
+ *
+ * <p>versionCode/versionName are retained for logs only. They are NOT part of
+ * the cache key or any functional decision. The stable token is derived from
+ * package name, the installed APK set paths/sizes and the signing certificate
+ * DER; this changes when the installed target code changes and survives
+ * process restarts. Reading the protected APK contents from inside Coolapk is
+ * deliberately avoided because the packer kills such reader threads.
  */
 final class TargetIdentity {
-    final long versionCode;
-    final String versionName;
+    final String packageName;
     final String apkPath;
     final long apkSize;
-    final long apkLastModified;
-    final long packageLastUpdateTime;
-    final String apkToken;
+    final String signingHash;
+    final String token;
 
-    private TargetIdentity(long versionCode, String versionName, String apkPath,
-                           long apkSize, long apkLastModified, long packageLastUpdateTime,
-                           String apkToken) {
-        this.versionCode = versionCode;
-        this.versionName = versionName;
+    // Logging/diagnostics only.
+    final long versionCode;
+    final String versionName;
+
+    private TargetIdentity(String packageName, String apkPath, long apkSize,
+                           String signingHash, String token,
+                           long versionCode, String versionName) {
+        this.packageName = packageName;
         this.apkPath = apkPath;
         this.apkSize = apkSize;
-        this.apkLastModified = apkLastModified;
-        this.packageLastUpdateTime = packageLastUpdateTime;
-        this.apkToken = apkToken;
+        this.signingHash = signingHash;
+        this.token = token;
+        this.versionCode = versionCode;
+        this.versionName = versionName;
     }
 
     static TargetIdentity compute(Context appContext) {
         long versionCode = -1L;
-        long packageLastUpdateTime = -1L;
         String versionName = "unknown";
+        String signingHash = "";
         try {
             PackageInfo packageInfo = appContext.getPackageManager()
                     .getPackageInfo(CoolapkModule.TARGET_PACKAGE, 0);
             versionCode = packageInfo.getLongVersionCode();
             versionName = packageInfo.versionName;
-            packageLastUpdateTime = packageInfo.lastUpdateTime;
+            signingHash = sha256(signingCertificateBytes(packageInfo));
         } catch (Throwable ignored) {
         }
 
@@ -53,49 +64,64 @@ final class TargetIdentity {
         String apkPath = info == null ? "" : String.valueOf(info.sourceDir);
         File apk = new File(apkPath);
         long size = apk.isFile() ? apk.length() : -1L;
-        long modified = apk.isFile() ? apk.lastModified() : -1L;
 
-        // Do NOT read the protected target APK contents here. Jiagu kills the
-        // reader thread. Hash only PackageManager/file metadata, which still
-        // changes on every APK upgrade and is used together with the DexKit
-        // in-memory DEX count as the cache invalidation token.
-        String tokenSource = versionCode + "|" + versionName + "|" + apkPath + "|"
-                + size + "|" + modified + "|" + packageLastUpdateTime;
-        return new TargetIdentity(versionCode, versionName, apkPath, size, modified,
-                packageLastUpdateTime, sha256(tokenSource));
+        StringBuilder split = new StringBuilder();
+        if (info != null && info.splitSourceDirs != null) {
+            for (String path : info.splitSourceDirs) {
+                File splitFile = new File(path);
+                split.append('|').append(path).append(':')
+                        .append(splitFile.isFile() ? splitFile.length() : -1L);
+            }
+        }
+
+        // versionCode/versionName intentionally absent: functional behavior
+        // and cache validity must not depend on version numbers.
+        String tokenSource = "pkg=" + CoolapkModule.TARGET_PACKAGE
+                + "|apk=" + apkPath
+                + "|size=" + size
+                + "|split=" + split
+                + "|cert=" + signingHash;
+        return new TargetIdentity(
+                CoolapkModule.TARGET_PACKAGE,
+                apkPath,
+                size,
+                signingHash,
+                sha256(tokenSource),
+                versionCode,
+                versionName);
     }
 
     boolean sameTarget(TargetIdentity other) {
         return other != null
-                && versionCode == other.versionCode
+                && token != null && token.equals(other.token)
+                && packageName.equals(other.packageName)
                 && apkSize == other.apkSize
-                && apkLastModified == other.apkLastModified
-                && packageLastUpdateTime == other.packageLastUpdateTime
-                && apkToken != null
-                && apkToken.equals(other.apkToken)
-                && apkPath != null
-                && apkPath.equals(other.apkPath);
+                && apkPath != null && apkPath.equals(other.apkPath);
     }
 
     String describe() {
-        return "versionCode=" + versionCode
-                + " versionName=" + versionName
+        return "identity=" + shortToken()
+                + " pkg=" + packageName
                 + " apk=" + apkPath
                 + " size=" + apkSize
-                + " modified=" + apkLastModified
-                + " packageLastUpdate=" + packageLastUpdateTime
-                + " token=" + (apkToken == null ? "null" : apkToken.substring(0, Math.min(16, apkToken.length())));
+                + " cert=" + (signingHash == null ? "null"
+                : signingHash.substring(0, Math.min(12, signingHash.length())))
+                + " [log]version=" + versionName + "(" + versionCode + ")";
+    }
+
+    String shortToken() {
+        return token == null ? "null" : token.substring(0, Math.min(16, token.length()));
     }
 
     JSONObject toJson() throws JSONException {
         JSONObject json = new JSONObject();
+        json.put("package", packageName);
+        json.put("apkPath", apkPath);
+        json.put("apkSize", apkSize);
+        json.put("signingHash", String.valueOf(signingHash));
+        json.put("token", String.valueOf(token));
         json.put("versionCode", versionCode);
         json.put("versionName", String.valueOf(versionName));
-        json.put("apkPath", String.valueOf(apkPath));
-        json.put("apkSize", apkSize);
-        json.put("apkLastModified", apkLastModified);
-        json.put("apkToken", String.valueOf(apkToken));
-        json.put("packageLastUpdateTime", packageLastUpdateTime);
         return json;
     }
 
@@ -104,13 +130,38 @@ final class TargetIdentity {
             return null;
         }
         return new TargetIdentity(
-                json.optLong("versionCode", -1L),
-                json.optString("versionName", "unknown"),
+                json.optString("package", ""),
                 json.optString("apkPath", ""),
                 json.optLong("apkSize", -1L),
-                json.optLong("apkLastModified", -1L),
-                json.optLong("packageLastUpdateTime", -1L),
-                json.optString("apkToken", null));
+                json.optString("signingHash", ""),
+                json.optString("token", ""),
+                json.optLong("versionCode", -1L),
+                json.optString("versionName", "unknown"));
+    }
+
+    private static byte[] signingCertificateBytes(PackageInfo packageInfo) {
+        if (packageInfo == null) {
+            return new byte[0];
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                SigningInfo signingInfo = packageInfo.signingInfo;
+                if (signingInfo != null && signingInfo.getApkContentsSigners() != null
+                        && signingInfo.getApkContentsSigners().length > 0) {
+                    return signingInfo.getApkContentsSigners()[0].toByteArray();
+                }
+            }
+            if (packageInfo.signatures != null && packageInfo.signatures.length > 0) {
+                Signature signature = packageInfo.signatures[0];
+                return signature == null ? new byte[0] : signature.toByteArray();
+            }
+        } catch (Throwable ignored) {
+        }
+        return new byte[0];
+    }
+
+    private static String sha256(byte[] value) {
+        return sha256(new String(value, StandardCharsets.ISO_8859_1));
     }
 
     private static String sha256(String value) {
@@ -124,7 +175,7 @@ final class TargetIdentity {
             }
             return sb.toString();
         } catch (Throwable ignored) {
-            return null;
+            return "";
         }
     }
 }

@@ -38,3 +38,6 @@ Thumbs.db
 # Local reverse-engineering workspace and user-supplied APK corpus
 analysis/
 history-apks/
+
+# User-provided local architecture brief
+/启动时序与全版本 Resolver 架构优化.md
