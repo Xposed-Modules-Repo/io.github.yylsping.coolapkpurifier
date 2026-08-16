@@ -44,3 +44,6 @@ history-apks/
 
 # User-provided final stabilization brief
 /rc5 → Stable 最终收尾提示词.md
+
+# Local tool state
+/.dsh/
