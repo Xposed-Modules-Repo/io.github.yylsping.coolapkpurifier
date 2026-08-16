@@ -35,7 +35,7 @@ final class DexKitSession {
 
     void notifyLoaderGenerationChanged() {
         generation.incrementAndGet();
-        trace.mark("loaderGeneration", "generation=" + generation.get()
+        trace("loaderGeneration", "generation=" + generation.get()
                 + " loaderIdentity=" + System.identityHashCode(loader));
     }
 
@@ -59,12 +59,12 @@ final class DexKitSession {
             long start = SystemClock.elapsedRealtime();
             try {
                 DexKitNativeLoader.ensureLoaded(appContext());
-                trace.mark("bridgeCreateStart", "trigger=" + trigger
+                trace("bridgeCreateStart", "trigger=" + trigger
                         + " generation=" + bridgeGeneration
                         + " loaderIdentity=" + loaderIdentity);
                 bridge = DexKitBridge.create(loader, true);
                 long end = SystemClock.elapsedRealtime();
-                trace.mark("bridgeCreateEnd", "trigger=" + trigger
+                trace("bridgeCreateEnd", "trigger=" + trigger
                         + " elapsedMs=" + (end - start)
                         + " dexNum=" + (bridge.isValid() ? bridge.getDexNum() : -1)
                         + " rebuild=" + rebuildCount);
@@ -79,7 +79,7 @@ final class DexKitSession {
                 }
                 return bridge.isValid() ? bridge : null;
             } catch (Throwable throwable) {
-                trace.mark("bridgeCreateEnd", "trigger=" + trigger + " failed=" + throwable);
+                trace("bridgeCreateEnd", "trigger=" + trigger + " failed=" + throwable);
                 log.error("resolver dexkit bridge creation failed trigger=" + trigger, throwable);
                 return null;
             }
@@ -99,7 +99,7 @@ final class DexKitSession {
     void close() {
         synchronized (lock) {
             if (bridge != null) {
-                trace.mark("resolverClosed", "dexNum="
+                trace("resolverClosed", "dexNum="
                         + (bridge.isValid() ? bridge.getDexNum() : -1));
             }
             closeBridge();
@@ -113,6 +113,13 @@ final class DexKitSession {
             } catch (Throwable ignored) {
             }
             bridge = null;
+        }
+    }
+
+    private void trace(String event, String detail) {
+        BootstrapTrace current = trace;
+        if (current != null) {
+            current.mark(event, detail);
         }
     }
 

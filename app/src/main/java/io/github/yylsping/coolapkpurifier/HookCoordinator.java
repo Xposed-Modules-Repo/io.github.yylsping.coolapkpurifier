@@ -209,7 +209,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 runSession(trigger, attempt);
             } catch (Throwable throwable) {
                 log.error("coordinator resolution session failed", throwable);
-                traceAfterContext("sessionError", "trigger=" + trigger + " error=" + throwable);
+                traceAfterContext("sessionError", "trigger=" + trigger
+                        + " error=" + throwable
+                        + " stack=" + android.util.Log.getStackTraceString(throwable));
                 markState(BootstrapState.DEGRADED);
             } finally {
                 sessionRunning.set(false);
@@ -334,6 +336,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     }
 
     private DexKitSession ensureSession(String trigger) {
+        if (trace == null) {
+            trace = new BootstrapTrace(appContext);
+        }
         if (dexKitSession == null) {
             dexKitSession = new DexKitSession(log, trace, primaryLoader);
             dexKitSession.notifyLoaderGenerationChanged();
