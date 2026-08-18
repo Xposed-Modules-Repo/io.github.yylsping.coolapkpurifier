@@ -15,10 +15,16 @@ final class ModuleLog {
 
     void info(String message) {
         Log.i(TAG, message);
-        module.log(Log.INFO, TAG, message);
+        if (module != null) {
+            module.log(Log.INFO, TAG, message);
+        }
     }
 
     void error(String message, Throwable throwable) {
+        if (module == null) {
+            Log.e(TAG, message);
+            return;
+        }
         if (throwable == null) {
             Log.e(TAG, message);
             module.log(Log.ERROR, TAG, message);

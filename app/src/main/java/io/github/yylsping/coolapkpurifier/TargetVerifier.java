@@ -24,31 +24,46 @@ final class TargetVerifier {
             if (type == null) {
                 return "class not loadable";
             }
-            if (target.methodDescriptor != null && !target.methodDescriptor.isEmpty()) {
-                Method method = DescriptorUtils.methodForDescriptor(target.methodDescriptor, loader);
-                if (method == null) {
-                    return "method not loadable";
-                }
-                switch (target.key) {
-                    case TargetResolver.KEY_FEED:
-                        return isFeedShape(method) && !Modifier.isAbstract(method.getModifiers())
-                                ? null : "feed shape mismatch";
-                    case TargetResolver.KEY_SPLASH_BASE:
-                        return Activity.class.isAssignableFrom(type)
-                                && "onCreate".equals(method.getName())
-                                && method.getParameterTypes().length == 1
-                                && method.getParameterTypes()[0] == Bundle.class
-                                ? null : "splash shape mismatch";
-                    default:
-                        return method.getParameterTypes().length == 0
-                                && method.getReturnType() == String.class
-                                ? null : "getter shape mismatch";
-                }
+            // Splash targets may legitimately carry an empty method descriptor;
+            // the real onCreate is located at install time via findOnCreate.
+            if (target.methodDescriptor == null || target.methodDescriptor.isEmpty()) {
+                return TargetResolver.isSplashKey(target.key)
+                        && Activity.class.isAssignableFrom(type)
+                        ? null : "empty method descriptor";
             }
-            return null;
+            Method method = DescriptorUtils.methodForDescriptor(target.methodDescriptor, loader);
+            if (method == null) {
+                return "method not loadable";
+            }
+            switch (keyKind(target.key)) {
+                case TargetResolver.KEY_FEED:
+                    return isFeedShape(method) && !Modifier.isAbstract(method.getModifiers())
+                            ? null : "feed shape mismatch";
+                case TargetResolver.KEY_SPLASH_BASE:
+                    return Activity.class.isAssignableFrom(type)
+                            && "onCreate".equals(method.getName())
+                            && method.getParameterTypes().length == 1
+                            && method.getParameterTypes()[0] == Bundle.class
+                            ? null : "splash shape mismatch";
+                default:
+                    return method.getParameterTypes().length == 0
+                            && method.getReturnType() == String.class
+                            ? null : "getter shape mismatch";
+            }
         } catch (Throwable throwable) {
             return String.valueOf(throwable);
         }
+    }
+
+    /** Normalizes feed#2 / splash_base#2 style keys to their base key. */
+    private static String keyKind(String key) {
+        if (TargetResolver.isFeedKey(key)) {
+            return TargetResolver.KEY_FEED;
+        }
+        if (TargetResolver.isSplashKey(key)) {
+            return TargetResolver.KEY_SPLASH_BASE;
+        }
+        return key;
     }
 
     static boolean isFeedShape(Method method) {

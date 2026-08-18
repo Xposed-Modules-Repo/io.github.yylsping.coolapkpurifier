@@ -2,23 +2,44 @@ package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
 
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * First-launch splash protection. Loose namespace/simple-name matching is
  * allowed only before MainActivity is seen. Resolved descriptors always win.
+ *
+ * <p>Coolapk ships several splash-family activities (brand splash, ad splash,
+ * fullscreen ad) that do not share one onCreate hierarchy, so the resolved set
+ * and the legacy fallback names cover all of them.
  */
 final class SplashGate {
     private static final String SPLASH_PACKAGE = "com.coolapk.market.view.splash";
 
-    private volatile Class<?> resolvedSplashClass;
+    /**
+     * Historically observed splash-family activity names across supported
+     * Coolapk versions. 16.5.1 uses SplashAdActivity for the ad splash while
+     * older builds used FullScreenAdActivity.
+     */
+    private static final Set<String> LEGACY_SPLASH_NAMES = Collections.unmodifiableSet(
+            new java.util.HashSet<>(java.util.Arrays.asList(
+                    "com.coolapk.market.view.splash.SplashActivity",
+                    "com.coolapk.market.view.splash.SplashAdActivity",
+                    "com.coolapk.market.view.splash.FullScreenAdActivity")));
+
+    private final Set<Class<?>> resolvedSplashClasses = ConcurrentHashMap.newKeySet();
     private volatile boolean mainActivitySeen;
     private volatile boolean firstActivitySeen;
 
-    void setResolvedSplashClass(Class<?> type) {
-        resolvedSplashClass = type;
+    void addResolvedSplashClass(Class<?> type) {
+        if (type != null) {
+            resolvedSplashClasses.add(type);
+        }
     }
 
-    boolean hasResolvedSplashClass() {
-        return resolvedSplashClass != null;
+    int resolvedSplashClassCount() {
+        return resolvedSplashClasses.size();
     }
 
     void markFirstActivity() {
@@ -42,8 +63,13 @@ final class SplashGate {
     }
 
     boolean isResolvedSplash(Activity activity) {
-        Class<?> resolved = resolvedSplashClass;
-        return resolved != null && resolved.isAssignableFrom(activity.getClass());
+        Class<?> runtimeClass = activity.getClass();
+        for (Class<?> resolved : resolvedSplashClasses) {
+            if (resolved.isAssignableFrom(runtimeClass)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     boolean isFallbackSplashCandidate(Activity activity) {
@@ -55,9 +81,11 @@ final class SplashGate {
     }
 
     boolean isLegacySplash(Activity activity) {
-        String name = activity.getClass().getName();
-        return "com.coolapk.market.view.splash.SplashActivity".equals(name)
-                || "com.coolapk.market.view.splash.FullScreenAdActivity".equals(name);
+        return LEGACY_SPLASH_NAMES.contains(activity.getClass().getName());
+    }
+
+    boolean isLegacySplashName(String className) {
+        return LEGACY_SPLASH_NAMES.contains(className);
     }
 
     boolean shouldFinishSplash(Activity activity) {

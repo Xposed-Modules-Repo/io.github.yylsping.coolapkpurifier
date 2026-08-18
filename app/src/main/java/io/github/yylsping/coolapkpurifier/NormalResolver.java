@@ -33,6 +33,8 @@ final class NormalResolver {
     static final String SOURCE_FALLBACK = "fallback_compat";
 
     private static final String AD_HELPER_CLASS = "com.coolapk.market.view.ad.EntityAdHelper";
+    private static final String ENTITY_LIST_FRAGMENT_CLASS =
+            "com.coolapk.market.view.cardlist.EntityListFragment";
     private static final String ENTITY_CLASS = "com.coolapk.market.model.Entity";
     private static final String SERIALIZED_NAME_ANNOTATION =
             "com.google.gson.annotations.SerializedName";
@@ -49,9 +51,11 @@ final class NormalResolver {
 
     Map<String, ResolvedTarget> resolve() {
         Map<String, ResolvedTarget> targets = new LinkedHashMap<>();
-        ResolvedTarget feed = resolveFeed();
-        if (feed != null) {
-            targets.put(TargetResolver.KEY_FEED, feed);
+        int feedIndex = 0;
+        for (ResolvedTarget feed : resolveFeeds()) {
+            String key = TargetResolver.indexedKey(TargetResolver.KEY_FEED, feedIndex);
+            targets.put(key, feed.withKey(key));
+            feedIndex++;
         }
         ClassData entityClass = resolveEntityClass();
         if (entityClass != null) {
@@ -70,24 +74,47 @@ final class NormalResolver {
         return targets;
     }
 
-    private ResolvedTarget resolveFeed() {
-        MethodData method = queryFeedStrong();
-        if (method != null) {
-            return methodTarget(TargetResolver.KEY_FEED, SOURCE_FINGERPRINT_STRONG, method);
+    /**
+     * Union of every feed-shaped business entry the tiers can see: DexKit
+     * strong fingerprint (sponsor string), DexKit weak scan of
+     * EntityAdHelper, and the 2.0.1 reflection fallback over both
+     * EntityAdHelper and EntityListFragment. Entries are deduplicated by
+     * method descriptor, so partial runtime DEX simply yields fewer entries
+     * and a later session adds the rest.
+     */
+    private List<ResolvedTarget> resolveFeeds() {
+        Map<String, ResolvedTarget> merged = new LinkedHashMap<>();
+        for (MethodData method : queryFeedStrong()) {
+            putFeed(merged, SOURCE_FINGERPRINT_STRONG, method);
         }
-        method = queryFeedWeak();
-        if (method != null) {
-            return methodTarget(TargetResolver.KEY_FEED, SOURCE_FINGERPRINT_WEAK, method);
+        for (MethodData method : queryFeedWeak()) {
+            putFeed(merged, SOURCE_FINGERPRINT_WEAK, method);
         }
-        ReflectedMethod reflected = queryFeedFallback();
-        if (reflected != null) {
-            return reflectedTarget(TargetResolver.KEY_FEED, SOURCE_FALLBACK, reflected);
+        for (ReflectedMethod reflected : queryFeedFallback()) {
+            putFeed(merged, SOURCE_FALLBACK, reflected);
         }
-        log.info("resolver target=feed path=all failed=unresolved failClosed=true");
-        return null;
+        if (merged.isEmpty()) {
+            log.info("resolver target=feed path=all failed=unresolved failClosed=true");
+        }
+        return new ArrayList<>(merged.values());
     }
 
-    private MethodData queryFeedStrong() {
+    private void putFeed(Map<String, ResolvedTarget> merged, String source, MethodData method) {
+        ResolvedTarget target = methodTarget(TargetResolver.KEY_FEED, source, method);
+        if (target != null) {
+            merged.put(target.methodDescriptor, target);
+        }
+    }
+
+    private void putFeed(Map<String, ResolvedTarget> merged, String source,
+                         ReflectedMethod reflected) {
+        ResolvedTarget target = reflectedTarget(TargetResolver.KEY_FEED, source, reflected);
+        if (target != null) {
+            merged.put(target.methodDescriptor, target);
+        }
+    }
+
+    private List<MethodData> queryFeedStrong() {
         try {
             MethodDataList raw = bridge.findMethod(FindMethod.create()
                     .searchPackages("com.coolapk.market")
@@ -97,30 +124,30 @@ final class NormalResolver {
                             .usingStrings("sponsorTemplates")));
             List<MethodData> candidates = filterFeed(raw, true);
             logCandidates("feed", "strong", candidates);
-            if (candidates.size() != 1) {
-                return null;
+            List<MethodData> verified = new ArrayList<>();
+            for (MethodData candidate : candidates) {
+                if (verifyFeed(candidate)) {
+                    verified.add(candidate);
+                } else {
+                    log.info("resolver target=feed path=fingerprint_strong"
+                            + " rejected=verification descriptor=" + candidate.getDescriptor());
+                }
             }
-            MethodData candidate = candidates.get(0);
-            if (!verifyFeed(candidate)) {
-                log.info("resolver target=feed path=fingerprint_strong"
-                        + " rejected=verification descriptor=" + candidate.getDescriptor());
-                return null;
-            }
-            return candidate;
+            return verified;
         } catch (Throwable throwable) {
             log.error("resolver target=feed path=fingerprint_strong queryFailed", throwable);
-            return null;
+            return new ArrayList<>();
         }
     }
 
-    private MethodData queryFeedWeak() {
+    private List<MethodData> queryFeedWeak() {
         try {
             ClassDataList classes = bridge.findClass(FindClass.create()
                     .searchPackages("com.coolapk.market")
                     .matcher(ClassMatcher.create().className(AD_HELPER_CLASS)));
             if (classes.size() != 1) {
                 logCandidates("feed", "weakClass", classes);
-                return null;
+                return new ArrayList<>();
             }
             MethodDataList methods = bridge.findMethod(FindMethod.create()
                     .searchInClass(Collections.singleton(classes.get(0)))
@@ -129,42 +156,44 @@ final class NormalResolver {
                             .paramTypes("java.util.List", "boolean")));
             List<MethodData> candidates = filterFeed(methods, false);
             logCandidates("feed", "weak", candidates);
-            if (candidates.size() != 1) {
-                return null;
+            List<MethodData> verified = new ArrayList<>();
+            for (MethodData candidate : candidates) {
+                if (verifyFeed(candidate)) {
+                    verified.add(candidate);
+                } else {
+                    log.info("resolver target=feed path=fingerprint_weak"
+                            + " rejected=verification descriptor=" + candidate.getDescriptor());
+                }
             }
-            MethodData candidate = candidates.get(0);
-            if (!verifyFeed(candidate)) {
-                log.info("resolver target=feed path=fingerprint_weak"
-                        + " rejected=verification descriptor=" + candidate.getDescriptor());
-                return null;
-            }
-            return candidate;
+            return verified;
         } catch (Throwable throwable) {
             log.error("resolver target=feed path=fingerprint_weak queryFailed", throwable);
-            return null;
+            return new ArrayList<>();
         }
     }
 
-    private ReflectedMethod queryFeedFallback() {
-        try {
-            Class<?> type = Class.forName(AD_HELPER_CLASS, false, loader);
-            List<Method> candidates = new ArrayList<>();
-            for (Method method : type.getDeclaredMethods()) {
-                if (TargetVerifier.isFeedShape(method)
-                        && !Modifier.isAbstract(method.getModifiers())) {
-                    candidates.add(method);
+    /** 2.0.1 parity: every feed-shaped declared method of both known classes. */
+    private List<ReflectedMethod> queryFeedFallback() {
+        List<ReflectedMethod> candidates = new ArrayList<>();
+        for (String className : java.util.Arrays.asList(AD_HELPER_CLASS, ENTITY_LIST_FRAGMENT_CLASS)) {
+            try {
+                Class<?> type = Class.forName(className, false, loader);
+                int found = 0;
+                for (Method method : type.getDeclaredMethods()) {
+                    if (TargetVerifier.isFeedShape(method)
+                            && !Modifier.isAbstract(method.getModifiers())) {
+                        candidates.add(new ReflectedMethod(method));
+                        found++;
+                    }
                 }
+                log.info("resolver target=feed path=fallback_compat candidates="
+                        + found + " class=" + type.getName());
+            } catch (Throwable throwable) {
+                log.info("resolver target=feed path=fallback_compat unavailable class="
+                        + className + " reason=" + throwable);
             }
-            log.info("resolver target=feed path=fallback_compat candidates="
-                    + candidates.size() + " class=" + type.getName());
-            if (candidates.size() != 1) {
-                return null;
-            }
-            return new ReflectedMethod(candidates.get(0));
-        } catch (Throwable throwable) {
-            log.info("resolver target=feed path=fallback_compat unavailable reason=" + throwable);
-            return null;
         }
+        return candidates;
     }
 
     private List<MethodData> filterFeed(MethodDataList raw, boolean requireSponsorString) {

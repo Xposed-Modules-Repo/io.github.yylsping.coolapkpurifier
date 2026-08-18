@@ -8,9 +8,12 @@ import android.os.Looper;
 import android.os.SystemClock;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -54,6 +57,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
     private final List<HookHandle> bootstrapHandles = new java.util.ArrayList<>();
+    private final Set<String> installedSplashClasses = ConcurrentHashMap.newKeySet();
 
     private volatile BootstrapState state = BootstrapState.BOOTSTRAP;
     private volatile Context appContext;
@@ -63,8 +67,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile DexKitSession dexKitSession;
     private final Map<String, ResolvedTarget> resolvedTargets = new LinkedHashMap<>();
     private volatile ClassLoader activeRuntimeLoader;
-    private volatile Method installedFeedMethod;
-    private volatile String installedSplashClass;
+    /**
+     * True when the previous resolution session ended without full coverage.
+     * The next session forces a DexKit bridge rebuild so freshly appended
+     * runtime DEX of the same ClassLoader becomes searchable.
+     */
+    private volatile boolean lastResolutionIncomplete;
     private volatile boolean splashCandidateSeenBeforeReady;
     private volatile boolean splashFinishedByHook;
     private volatile boolean terminalCleaned;
@@ -212,6 +220,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (activeRuntimeLoader == null || loaderChanged) {
             if (loaderChanged) {
                 closeSession("runtimeLoaderChanged");
+                lastResolutionIncomplete = false;
             }
             activeRuntimeLoader = loader;
             if (dexKitSession == null && trace != null) {
@@ -238,6 +247,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 + " runtimeLoaderIdentity=" + System.identityHashCode(loader)
                 + " previousLoaderIdentity=" + previous);
         closeSession(reason);
+        lastResolutionIncomplete = false;
         activeRuntimeLoader = loader;
         runtimeDexObserver.rearm();
     }
@@ -306,6 +316,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             trace.mark("cacheHit", "entries=" + verified.size() + " dexkitScan=false");
             log.info("resolver path=cache hit=true identity=" + identity.shortToken()
                     + " verified=" + verified.size() + " dexkitScan=false state=" + state);
+            lastResolutionIncomplete = false;
             finishReady();
             return;
         }
@@ -315,12 +326,20 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         DexKitSession session = ensureSession(trigger);
         if (session == null) {
             markState(BootstrapState.WAIT_RUNTIME_DEX);
+            lastResolutionIncomplete = true;
             return;
+        }
+        if (lastResolutionIncomplete) {
+            // The protected app appends runtime DEX to the same ClassLoader;
+            // bumping the generation forces the bridge to rescan the current
+            // DEX list instead of reusing the stale one.
+            session.notifyLoaderGenerationChanged("incompleteRetryRescan");
         }
         org.luckypray.dexkit.DexKitBridge bridge = session.ensureBridge(trigger);
         if (bridge == null || !bridge.isValid()) {
             markState(BootstrapState.WAIT_RUNTIME_DEX);
             log.info("resolver bridge unavailable state=WAIT_RUNTIME_DEX trigger=" + trigger);
+            lastResolutionIncomplete = true;
             return;
         }
 
@@ -330,12 +349,15 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         firstAdaptationToast.showOnce(appContext);
         markState(BootstrapState.SPLASH_CRITICAL);
         trace.mark("splashResolveStart", "trigger=" + trigger);
-        ResolvedTarget splash = new SplashCriticalResolver(bridge, loader, log).resolve();
-        trace.mark("splashResolveEnd",
-                "candidates=" + (splash == null ? "0" : "1")
-                        + " source=" + (splash == null ? "none" : splash.source));
-        if (splash != null) {
-            applyTargets(singletonMap(TargetResolver.KEY_SPLASH_BASE, splash), "dexkit");
+        List<ResolvedTarget> splashes = new SplashCriticalResolver(bridge, loader, log).resolve();
+        trace.mark("splashResolveEnd", "candidates=" + splashes.size());
+        if (!splashes.isEmpty()) {
+            Map<String, ResolvedTarget> splashTargets = new LinkedHashMap<>();
+            for (int i = 0; i < splashes.size(); i++) {
+                String key = TargetResolver.indexedKey(TargetResolver.KEY_SPLASH_BASE, i);
+                splashTargets.put(key, splashes.get(i).withKey(key));
+            }
+            applyTargets(splashTargets, "dexkit");
         } else {
             markState(BootstrapState.WAIT_RUNTIME_DEX);
             runtimeDexObserver.rearm();
@@ -349,13 +371,15 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         trace.mark("normalResolveEnd", "targets=" + normal.keySet());
         applyTargets(normal, "dexkit");
 
-        Map<String, ResolvedTarget> all = currentTargets(verified);
+        Map<String, ResolvedTarget> all = currentTargets();
         if (!all.isEmpty()) {
             cache.saveTargets(identity, all);
             trace.mark("cacheSaved", "entries=" + all.size() + " identity=" + identity.shortToken());
         }
 
-        if (isSplashReady() && areNormalTargetsReady()) {
+        boolean complete = isSplashReady() && areNormalTargetsReady();
+        lastResolutionIncomplete = !complete;
+        if (complete) {
             finishReady();
         } else if (isSplashReady()) {
             markState(BootstrapState.FULL_RESOLVE);
@@ -427,36 +451,50 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             return;
         }
         ClassLoader loader = resolveLoader();
+        Map<String, ResolvedTarget> merged;
         synchronized (resolvedTargets) {
             resolvedTargets.putAll(targets);
+            merged = new LinkedHashMap<>(resolvedTargets);
         }
-        entityListHooks.updateAccessors(targets, loader);
+        // Accessors must be rebuilt from the COMPLETE merged target map: an
+        // earlier splash-only increment used to wipe the already verified
+        // getters and fail the classifier closed for the first feed batches.
+        entityListHooks.updateAccessors(merged, loader);
 
-        ResolvedTarget feed = targets.get(TargetResolver.KEY_FEED);
-        if (feed != null && installedFeedMethod == null) {
+        for (Map.Entry<String, ResolvedTarget> entry : targets.entrySet()) {
+            if (!TargetResolver.isFeedKey(entry.getKey())) {
+                continue;
+            }
+            ResolvedTarget feed = entry.getValue();
             Method method = DescriptorUtils.methodForDescriptor(feed.methodDescriptor, loader);
             if (method != null) {
                 entityListHooks.install(method);
-                installedFeedMethod = method;
-                log.info("installed feed hook source=" + source + " method=" + method);
+            } else {
+                log.info("feed descriptor not loadable source=" + source
+                        + " key=" + entry.getKey() + " target=" + feed.describe());
             }
         }
+        if (entityListHooks.hookedMethodCount() > 0) {
+            log.info("installed feed hooks source=" + source
+                    + " total=" + entityListHooks.hookedMethodCount());
+        }
 
-        ResolvedTarget splash = targets.get(TargetResolver.KEY_SPLASH_BASE);
-        if (splash != null && installedSplashClass == null) {
+        for (Map.Entry<String, ResolvedTarget> entry : targets.entrySet()) {
+            if (!TargetResolver.isSplashKey(entry.getKey())) {
+                continue;
+            }
+            ResolvedTarget splash = entry.getValue();
             try {
                 Class<?> type = DescriptorUtils.classForName(splash.classDescriptor, loader);
                 if (type == null) {
                     log.info("splash descriptor not loadable source=" + source
                             + " target=" + splash.describe());
-                    return;
+                    continue;
                 }
-                // Resolved class still powers the framework fallback gate...
-                splashGate.setResolvedSplashClass(type);
-                // ...but SPLASH_READY requires a real specific hook.
+                splashGate.addResolvedSplashClass(type);
                 boolean installed = splashHooks.installSpecific(type);
                 if (installed) {
-                    installedSplashClass = type.getName();
+                    installedSplashClasses.add(type.getName());
                     traceAfterContext("splashHookInstalled", splash.describe()
                             + " installed=true source=" + source);
                     log.info("installed splash hook source=" + source
@@ -474,32 +512,28 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
     }
 
-    private Map<String, ResolvedTarget> currentTargets(Map<String, ResolvedTarget> cached) {
+    private Map<String, ResolvedTarget> currentTargets() {
         synchronized (resolvedTargets) {
             return new LinkedHashMap<>(resolvedTargets);
         }
     }
 
     private boolean isSplashReady() {
-        return installedSplashClass != null;
+        return !installedSplashClasses.isEmpty();
     }
 
     private boolean areNormalTargetsReady() {
-        synchronized (resolvedTargets) {
-            return resolvedTargets.containsKey(TargetResolver.KEY_FEED)
-                    && resolvedTargets.containsKey(TargetResolver.KEY_GETTER_TEMPLATE)
-                    && resolvedTargets.containsKey(TargetResolver.KEY_GETTER_ENTITY_ID)
-                    && resolvedTargets.containsKey(TargetResolver.KEY_GETTER_TITLE)
-                    && resolvedTargets.containsKey(TargetResolver.KEY_GETTER_ENTITY_TYPE);
-        }
+        return entityListHooks.hookedMethodCount() > 0
+                && entityListHooks.isAccessorsComplete();
     }
 
     private void finishReady() {
         markState(BootstrapState.READY);
         cleanupTerminal();
         maybeScheduleBootstrapRetire();
-        log.info("resolver fullReady state=READY feedInstalled=" + (installedFeedMethod != null)
-                + " splashInstalled=" + installedSplashClass);
+        log.info("resolver fullReady state=READY feedInstalled="
+                + entityListHooks.hookedMethodCount()
+                + " splashInstalled=" + installedSplashClasses);
     }
 
     /**
@@ -512,14 +546,14 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             return;
         }
         if (BootstrapRetirePolicy.canRetire(
-                state, splashGate.isMainActivitySeen(), installedSplashClass != null)) {
+                state, splashGate.isMainActivitySeen(), isSplashReady())) {
             mainHandler.post(this::retireBootstrap);
         }
     }
 
     private void retireBootstrap() {
         if (!BootstrapRetirePolicy.canRetire(
-                state, splashGate.isMainActivitySeen(), installedSplashClass != null)) {
+                state, splashGate.isMainActivitySeen(), isSplashReady())) {
             return;
         }
         if (!bootstrapRetired.compareAndSet(false, true)) {
@@ -531,7 +565,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     "state=" + state + " bootstrapRetired=true traceFrozen=true"
                             + " elapsedMs=" + current.elapsedSinceStart());
         }
-        splashHooks.retireBootstrapHooks();
+        // Passive mode: coordinator callbacks stop, but the Instrumentation
+        // splash safety net itself is retained for the process lifetime.
+        splashHooks.retireBootstrapCallbacks();
         log.info("coordinator bootstrapRetired=true state=" + state
                 + " traceFrozen=" + (current != null && current.isFrozen()));
     }
@@ -638,11 +674,5 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         } catch (Throwable ignored) {
             return null;
         }
-    }
-
-    private static Map<String, ResolvedTarget> singletonMap(String key, ResolvedTarget target) {
-        Map<String, ResolvedTarget> map = new LinkedHashMap<>();
-        map.put(key, target);
-        return map;
     }
 }

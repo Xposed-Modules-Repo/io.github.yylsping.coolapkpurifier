@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.yylsping.coolapkpurifier"
         minSdk = 23
         targetSdk = 35
-        versionCode = 7
-        versionName = "2.1.0"
+        versionCode = 8
+        versionName = "2.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -86,6 +86,7 @@ android {
 
 dependencies {
     compileOnly("io.github.libxposed:api:102.0.0")
+    testImplementation("io.github.libxposed:api:102.0.0")
     compileOnly("org.jetbrains.kotlin:kotlin-stdlib:1.5.0")
     implementation("org.luckypray:dexkit:2.0.6")
     testImplementation("junit:junit:4.13.2")

@@ -40,6 +40,11 @@ final class EntityAccessors {
         return invoke(entityType, instance);
     }
 
+    /** True when all four business getters actually resolved to live methods. */
+    boolean isComplete() {
+        return template != null && entityId != null && title != null && entityType != null;
+    }
+
     private static Method loadMethod(ResolvedTarget target, ClassLoader loader) {
         if (target == null || target.methodDescriptor == null || target.methodDescriptor.isEmpty()) {
             return null;

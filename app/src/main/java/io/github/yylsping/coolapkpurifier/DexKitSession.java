@@ -55,7 +55,10 @@ final class DexKitSession {
                     && loaderIdentity == loaderId) {
                 return bridge;
             }
-            if (rebuildCount >= 2) {
+            // Bounded rebuild budget: the runtime loader may append DEX in
+            // several stages, and each incomplete session bumps the
+            // generation to force one rescan.
+            if (rebuildCount >= 4) {
                 log.info("resolver dexkit rebuild refused rebuildCount=" + rebuildCount
                         + " trigger=" + trigger);
                 return bridge != null && bridge.isValid() ? bridge : null;

@@ -36,6 +36,7 @@ final class SplashHooks {
     private final List<HookHandle> bootstrapHandles = new ArrayList<>();
     private final List<HookHandle> specificHandles = new ArrayList<>();
     private final Set<Method> hookedSpecific = new HashSet<>();
+    private volatile boolean bootstrapCallbacksActive = true;
 
     SplashHooks(XposedModule module, ModuleLog log, ActivityObserver observer) {
         this.module = module;
@@ -60,12 +61,19 @@ final class SplashHooks {
                 .intercept(chain -> {
                     Object candidate = chain.getArg(0);
                     Activity activity = candidate instanceof Activity ? (Activity) candidate : null;
-                    if (activity != null) {
+                    boolean callbacksActive = bootstrapCallbacksActive;
+                    if (activity != null && callbacksActive) {
                         observer.onPreActivityCreate(activity);
                     }
                     Object result = chain.proceed();
                     if (activity != null) {
-                        observer.onPostActivityCreate(activity);
+                        if (callbacksActive) {
+                            observer.onPostActivityCreate(activity);
+                        }
+                        // The splash safety net stays alive for the whole
+                        // process lifetime: a later FullScreenAdActivity that
+                        // is not part of any resolved hierarchy must still be
+                        // finished after the bootstrap subsystem retires.
                         if (observer.shouldFinishSplash(activity)) {
                             finishSplash(activity, "instrumentation");
                         }
@@ -76,23 +84,15 @@ final class SplashHooks {
     }
 
     /**
-     * Retires only the generic Instrumentation bootstrap hooks. Idempotent.
-     * The resolved specific splash hook is a business hook and stays alive.
+     * Retires the coordinator-facing bootstrap callbacks but keeps the
+     * Instrumentation hooks installed in a passive mode. Unlike 2.1.0, the
+     * hooks are never unhooked: after READY only the cheap splash gate runs,
+     * which is the 2.0.1-proven safety net for splash-family activities that
+     * appear outside the resolved target hierarchy.
      */
-    synchronized void retireBootstrapHooks() {
-        int count = 0;
-        for (HookHandle handle : bootstrapHandles) {
-            try {
-                handle.unhook();
-                count++;
-            } catch (Throwable throwable) {
-                log.error("unable to retire instrumentation bootstrap hook", throwable);
-            }
-        }
-        bootstrapHandles.clear();
-        if (count > 0) {
-            log.info("instrumentation bootstrap hooks retired count=" + count);
-        }
+    synchronized void retireBootstrapCallbacks() {
+        bootstrapCallbacksActive = false;
+        log.info("instrumentation bootstrap callbacks retired hooksRetained=true");
     }
 
     synchronized boolean installSpecific(Class<?> splashBase) {

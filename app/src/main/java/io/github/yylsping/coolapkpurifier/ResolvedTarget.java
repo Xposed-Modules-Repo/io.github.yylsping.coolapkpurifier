@@ -52,4 +52,13 @@ final class ResolvedTarget {
     String describe() {
         return key + " class=" + classDescriptor + " method=" + methodDescriptor + " source=" + source;
     }
+
+    /**
+     * Copy with a different key. Multi-target resolutions (feed#2,
+     * splash_base#2...) must carry the indexed key inside the record so the
+     * persisted cache keeps every entry distinct on reload.
+     */
+    ResolvedTarget withKey(String newKey) {
+        return new ResolvedTarget(newKey, source, classDescriptor, methodDescriptor, resolvedAt);
+    }
 }

@@ -1,21 +1,31 @@
 package io.github.yylsping.coolapkpurifier;
 
 import java.lang.reflect.Method;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import io.github.libxposed.api.XposedInterface.ExceptionMode;
 import io.github.libxposed.api.XposedInterface.HookHandle;
 import io.github.libxposed.api.XposedModule;
 
+/**
+ * Feed filter hooks. 2.0.1 covered every (List, boolean) -> List transformer
+ * in both EntityAdHelper and EntityListFragment; this class keeps that shape:
+ * every newly resolved business entry is hooked additively and existing hooks
+ * are never removed, so partial resolutions cannot shrink coverage.
+ */
 final class EntityListHooks {
     private final XposedModule module;
     private final ModuleLog log;
     private final EntityClassifier classifier = new EntityClassifier();
     private final EntityListFilter filter = new EntityListFilter(classifier);
-
-    private volatile Method hookedMethod;
-    private HookHandle handle;
+    private final Set<Method> hookedMethods = new HashSet<>();
+    private final Map<Method, HookHandle> handles = new HashMap<>();
+    private volatile boolean accessorsComplete;
 
     EntityListHooks(XposedModule module, ModuleLog log) {
         this.module = module;
@@ -23,41 +33,67 @@ final class EntityListHooks {
     }
 
     void updateAccessors(Map<String, ResolvedTarget> targets, ClassLoader loader) {
-        classifier.setAccessors(EntityAccessors.fromTargets(targets, loader));
+        EntityAccessors accessors = EntityAccessors.fromTargets(targets, loader);
+        classifier.setAccessors(accessors);
+        accessorsComplete = accessors.isComplete();
     }
 
-    synchronized void install(Method method) {
-        if (method == null || method.equals(hookedMethod)) {
-            return;
+    boolean isAccessorsComplete() {
+        return accessorsComplete;
+    }
+
+    /**
+     * Hooks one more list transformer. Returns how many hooks were added by
+     * this call (0 when the method was already hooked or is unusable).
+     */
+    synchronized int install(Method method) {
+        if (method == null || hookedMethods.contains(method)) {
+            return 0;
         }
-        if (handle != null) {
-            try {
-                handle.unhook();
-            } catch (Throwable ignored) {
-            }
-        }
-        hookedMethod = method;
-        handle = module.hook(method)
-                .setExceptionMode(ExceptionMode.PROTECTIVE)
-                .setId("coolapk-feed-filter")
-                .intercept(chain -> {
-                    Object original = chain.proceed();
-                    if (!(original instanceof List<?>)) {
-                        return original;
-                    }
-                    try {
-                        List<?> source = (List<?>) original;
-                        List<?> filtered = filter.filter(source);
-                        if (filtered != source) {
-                            log.info("removed " + (source.size() - filtered.size())
-                                    + " sponsored item(s) via " + method);
+        try {
+            HookHandle handle = module.hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("coolapk-feed-filter")
+                    .intercept(chain -> {
+                        Object original = chain.proceed();
+                        if (!(original instanceof List<?>)) {
+                            return original;
                         }
-                        return filtered;
-                    } catch (Throwable throwable) {
-                        log.error("ad filtering failed; preserving original list", throwable);
-                        return original;
-                    }
-                });
-        log.info("installed feed filter hook method=" + method);
+                        try {
+                            List<?> source = (List<?>) original;
+                            List<?> filtered = filter.filter(source);
+                            if (filtered != source) {
+                                log.info("removed " + (source.size() - filtered.size())
+                                        + " sponsored item(s) via " + method);
+                            }
+                            return filtered;
+                        } catch (Throwable throwable) {
+                            log.error("ad filtering failed; preserving original list", throwable);
+                            return original;
+                        }
+                    });
+            handles.put(method, handle);
+            hookedMethods.add(method);
+            log.info("installed feed filter hook method=" + method);
+            return 1;
+        } catch (Throwable throwable) {
+            log.error("feed filter hook install failed method=" + method, throwable);
+            return 0;
+        }
+    }
+
+    synchronized int installAll(Collection<Method> methods) {
+        int installed = 0;
+        if (methods == null) {
+            return 0;
+        }
+        for (Method method : methods) {
+            installed += install(method);
+        }
+        return installed;
+    }
+
+    synchronized int hookedMethodCount() {
+        return hookedMethods.size();
     }
 }
