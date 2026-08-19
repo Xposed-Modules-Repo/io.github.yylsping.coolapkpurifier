@@ -16,15 +16,21 @@ import io.github.libxposed.api.XposedModule;
  * {@code ClassLoader.loadClass}. The first business-class event fires once and
  * closes the hooks. {@link #rearm()} re-arms and, when the hooks were closed,
  * reinstalls them, so a later runtime DEX generation is still observed.
+ *
+ * <p>Installation is publish-once and close-aware: an installer builds its
+ * handles into a local list first; if {@link #close()} ran in the meantime
+ * (terminal cleanup racing an in-flight rearm), the freshly created handles
+ * are unhooked immediately instead of leaking a live ClassLoader hook past
+ * terminal state.
  */
 final class RuntimeDexObserver {
     interface Listener {
         void onRuntimeDexReady(String trigger, ClassLoader runtimeClassLoader);
     }
 
-    /** Installs the raw loadClass hooks into the observer's handle list. */
+    /** Creates the loadClass hooks; they are published only if no close() ran meanwhile. */
     interface HookInstaller {
-        void installLoadClassHooks() throws Throwable;
+        List<HookHandle> installLoadClassHooks() throws Throwable;
     }
 
     private final ModuleLog log;
@@ -34,12 +40,17 @@ final class RuntimeDexObserver {
     private final List<HookHandle> handles = new ArrayList<>();
     private boolean armed;
     /**
-     * Guards against concurrent hook installation. Two threads calling
-     * rearm() while the installer is still running (handles not yet
-     * registered) used to both observe an empty handle list and install the
-     * loadClass hooks twice.
+     * Guards against concurrent hook installation: two threads rearming
+     * while an installer is still running used to both observe an empty
+     * handle list and install the loadClass hooks twice.
      */
     private boolean installing;
+    /**
+     * Bumped by every {@link #close()}. An installation that started under an
+     * older epoch is discarded at publish time — close() could not have
+     * unhooked handles that did not exist yet.
+     */
+    private int closeEpoch;
 
     RuntimeDexObserver(XposedModule module, ModuleLog log, Listener listener) {
         this(module, log, listener, null);
@@ -84,29 +95,43 @@ final class RuntimeDexObserver {
         if (!needInstall) {
             return;
         }
-        try {
-            installHooks(reason);
-        } finally {
-            synchronized (this) {
-                installing = false;
-            }
+        int epoch;
+        synchronized (this) {
+            epoch = closeEpoch;
         }
-    }
-
-    private void installHooks(String reason) {
+        List<HookHandle> created = new ArrayList<>();
         try {
-            hookInstaller.installLoadClassHooks();
-            log.info("runtime dex observer installed reason=" + reason);
+            List<HookHandle> installed = hookInstaller.installLoadClassHooks();
+            if (installed != null) {
+                created.addAll(installed);
+            }
         } catch (Throwable throwable) {
             log.error("runtime dex observer install failed reason=" + reason, throwable);
         }
+        boolean publish;
+        synchronized (this) {
+            installing = false;
+            publish = epoch == closeEpoch && armed;
+            if (publish) {
+                handles.addAll(created);
+            }
+        }
+        if (publish) {
+            log.info("runtime dex observer installed reason=" + reason
+                    + " handles=" + created.size());
+        } else {
+            unhookAll(created);
+            log.info("runtime dex observer install discarded reason=" + reason
+                    + " closedDuringInstall=true handles=" + created.size());
+        }
     }
 
-    private void installDefaultHooks() throws ReflectiveOperationException {
+    private List<HookHandle> installDefaultHooks() throws ReflectiveOperationException {
         Method oneArg = ClassLoader.class.getDeclaredMethod("loadClass", String.class);
         Method twoArgs = ClassLoader.class.getDeclaredMethod(
                 "loadClass", String.class, boolean.class);
-        addHandle(module.hook(oneArg)
+        List<HookHandle> created = new ArrayList<>();
+        created.add(module.hook(oneArg)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .setId("coolapk-runtime-dex-1")
                 .intercept(chain -> {
@@ -116,7 +141,7 @@ final class RuntimeDexObserver {
                     }
                     return result;
                 }));
-        addHandle(module.hook(twoArgs)
+        created.add(module.hook(twoArgs)
                 .setExceptionMode(ExceptionMode.PROTECTIVE)
                 .setId("coolapk-runtime-dex-2")
                 .intercept(chain -> {
@@ -126,16 +151,7 @@ final class RuntimeDexObserver {
                     }
                     return result;
                 }));
-    }
-
-    /** Installers register their handles here so close()/rearm() stay exact. */
-    void addHandle(HookHandle handle) {
-        if (handle == null) {
-            return;
-        }
-        synchronized (this) {
-            handles.add(handle);
-        }
+        return created;
     }
 
     /** Sink for the loadClass interceptors; single-shot per arming. */
@@ -150,8 +166,8 @@ final class RuntimeDexObserver {
             }
             armed = false;
             loader = loadedClass.getClassLoader();
-            close();
         }
+        close();
         log.info("runtime dex ready trigger=loadClass class=" + loadedClass.getName()
                 + " loaderIdentity=" + System.identityHashCode(loader));
         listener.onRuntimeDexReady("loadClass:" + loadedClass.getName(), loader);
@@ -163,22 +179,35 @@ final class RuntimeDexObserver {
                 return;
             }
             armed = false;
-            close();
         }
+        close();
         log.info("runtime dex ready trigger=firstActivityPre loaderIdentity="
                 + System.identityHashCode(activityLoader));
         listener.onRuntimeDexReady("firstActivityPre", activityLoader);
     }
 
+    /**
+     * Closes this arming: bumps the close epoch (invalidating any in-flight
+     * installation), disarms and unhooks every published handle. A later
+     * {@link #rearm()} works under the new epoch.
+     */
     void close() {
+        List<HookHandle> toUnhook;
         synchronized (this) {
-            for (HookHandle handle : handles) {
-                try {
-                    handle.unhook();
-                } catch (Throwable ignored) {
-                }
-            }
+            closeEpoch++;
+            armed = false;
+            toUnhook = new ArrayList<>(handles);
             handles.clear();
+        }
+        unhookAll(toUnhook);
+    }
+
+    private void unhookAll(List<HookHandle> toUnhook) {
+        for (HookHandle handle : toUnhook) {
+            try {
+                handle.unhook();
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -186,6 +215,11 @@ final class RuntimeDexObserver {
         synchronized (this) {
             return armed;
         }
+    }
+
+    /** Visible for tests: number of currently published handles. */
+    synchronized int publishedHandleCount() {
+        return handles.size();
     }
 
     private static boolean isBusinessClass(String name) {

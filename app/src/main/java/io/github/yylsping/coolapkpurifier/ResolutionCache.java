@@ -34,14 +34,21 @@ final class ResolutionCache {
     private static final String FILE_NAME = "coolapk_purifier_cache_v4.json";
 
     private final File file;
+    private final CacheAtomicWriter.ReplaceOperation replaceOperation;
     private final Object lock = new Object();
 
     ResolutionCache(Context appContext) {
-        this(appContext.getFilesDir());
+        this(appContext.getFilesDir(), CacheAtomicWriter.RENAME_REPLACE);
     }
 
     ResolutionCache(File filesDir) {
+        this(filesDir, CacheAtomicWriter.RENAME_REPLACE);
+    }
+
+    /** Injectable replacement keeps Android's atomic rename in production while JVM tests can substitute one that replaces existing files. */
+    ResolutionCache(File filesDir, CacheAtomicWriter.ReplaceOperation replaceOperation) {
         this.file = new File(filesDir, FILE_NAME);
+        this.replaceOperation = replaceOperation;
         File temp = new File(file.getParentFile(), file.getName() + ".tmp");
         if (temp.isFile()) {
             //noinspection ResultOfMethodCallIgnored
@@ -49,9 +56,27 @@ final class ResolutionCache {
         }
     }
 
+    /** A stored resolution plus whether it was saved from an anchors-settled session. */
+    static final class CachedResolution {
+        final Map<String, ResolvedTarget> targets;
+        final boolean coverageSettled;
+
+        CachedResolution(Map<String, ResolvedTarget> targets, boolean coverageSettled) {
+            this.targets = targets;
+            this.coverageSettled = coverageSettled;
+        }
+    }
+
     Map<String, ResolvedTarget> loadTargets(TargetIdentity identity) {
+        return loadResolution(identity).targets;
+    }
+
+    CachedResolution loadResolution(TargetIdentity identity) {
         CacheEntry entry = loadEntry(identity);
-        return entry == null ? new LinkedHashMap<>() : new LinkedHashMap<>(entry.targets);
+        if (entry == null) {
+            return new CachedResolution(new LinkedHashMap<>(), false);
+        }
+        return new CachedResolution(new LinkedHashMap<>(entry.targets), entry.coverageSettled);
     }
 
     boolean isRecoveryAttempted(TargetIdentity identity) {
@@ -106,7 +131,14 @@ final class ResolutionCache {
         }
     }
 
-    void saveTargets(TargetIdentity identity, Map<String, ResolvedTarget> targets) {
+    /**
+     * Persists the resolution for this identity. {@code settledByAnchors} is
+     * stored per entry: only a cache saved from an anchors-settled session
+     * may later satisfy the READY cache-hit path — deadline-settled or
+     * partial sessions store false and force a fresh resolver run.
+     */
+    void saveTargets(TargetIdentity identity, Map<String, ResolvedTarget> targets,
+                     boolean settledByAnchors) {
         synchronized (lock) {
             try {
                 JSONObject root = readJson();
@@ -121,7 +153,8 @@ final class ResolutionCache {
                     root.put("entries", entries);
                 }
                 JSONObject replacement =
-                        encodeEntry(identity, targets, System.currentTimeMillis());
+                        encodeEntry(identity, targets, System.currentTimeMillis(),
+                                settledByAnchors);
                 JSONArray merged = new JSONArray();
                 merged.put(replacement);
                 for (int i = 0; i < entries.length(); i++) {
@@ -194,8 +227,11 @@ final class ResolutionCache {
                 }
                 Map<String, ResolvedTarget> targets = decodeTargets(candidate);
                 long lastUsedAt = candidate.optLong("lastUsedAt", 0L);
+                // Absent flag (entries written before it existed) fails closed:
+                // such a cache never satisfies the READY cache-hit path.
+                boolean coverageSettled = candidate.optBoolean("coverageSettled", false);
                 touch(identity, lastUsedAt);
-                return new CacheEntry(targets, lastUsedAt);
+                return new CacheEntry(targets, lastUsedAt, coverageSettled);
             }
             return null;
         }
@@ -273,7 +309,7 @@ final class ResolutionCache {
                     return false;
                 }
             }
-            return CacheAtomicWriter.write(file, bytes, CacheAtomicWriter.RENAME_REPLACE);
+            return CacheAtomicWriter.write(file, bytes, replaceOperation);
         } catch (Throwable ignored) {
             return false;
         }
@@ -347,10 +383,12 @@ final class ResolutionCache {
 
     private JSONObject encodeEntry(TargetIdentity identity,
                                    Map<String, ResolvedTarget> targets,
-                                   long lastUsedAt) throws JSONException {
+                                   long lastUsedAt,
+                                   boolean settledByAnchors) throws JSONException {
         JSONObject entry = new JSONObject();
         entry.put("identity", identity.toJson());
         entry.put("lastUsedAt", lastUsedAt);
+        entry.put("coverageSettled", settledByAnchors);
         JSONArray array = new JSONArray();
         for (ResolvedTarget target : targets.values()) {
             array.put(target.toJson());
@@ -401,10 +439,13 @@ final class ResolutionCache {
     private static final class CacheEntry {
         final Map<String, ResolvedTarget> targets;
         final long lastUsedAt;
+        final boolean coverageSettled;
 
-        CacheEntry(Map<String, ResolvedTarget> targets, long lastUsedAt) {
+        CacheEntry(Map<String, ResolvedTarget> targets, long lastUsedAt,
+                   boolean coverageSettled) {
             this.targets = targets;
             this.lastUsedAt = lastUsedAt;
+            this.coverageSettled = coverageSettled;
         }
     }
 }

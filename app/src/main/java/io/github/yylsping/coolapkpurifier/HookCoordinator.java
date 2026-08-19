@@ -37,7 +37,10 @@ import io.github.libxposed.api.XposedModule;
  * unsettled feed coverage), and the 20s deadline takes precedence over every
  * intermediate state and always terminates (READY when core filtering works,
  * DEGRADED otherwise). READY itself is two-layer: core hooks installed AND
- * feed coverage settled (both anchor classes hooked, or deadline).
+ * feed coverage settled (every discovered feed method of both anchor classes
+ * live-hooked, or deadline). READY/DEGRADED are frozen once entered; a
+ * trigger arriving while a session runs is coalesced into exactly one
+ * follow-up session instead of being dropped.
  */
 final class HookCoordinator implements SplashHooks.ActivityObserver,
         RuntimeDexObserver.Listener {
@@ -64,10 +67,14 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable ->
             new Thread(runnable, "pool-resolver-worker"));
     private final Object stateLock = new Object();
-    private final AtomicBoolean sessionRunning = new AtomicBoolean();
+    /** Freezes READY/DEGRADED; late sessions can never flip a terminal state. */
+    private final TerminalStateGate stateGate = new TerminalStateGate(BootstrapState.BOOTSTRAP);
+    /** Coalesces triggers that arrive while a session runs into one follow-up. */
+    private final SessionScheduler sessionScheduler = new SessionScheduler();
     private final AtomicBoolean bootstrapRetired = new AtomicBoolean();
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
+    private final OnceFlag terminalCleaned = new OnceFlag();
     private final List<HookHandle> bootstrapHandles = new java.util.ArrayList<>();
     private final Set<String> installedSplashClasses = ConcurrentHashMap.newKeySet();
 
@@ -87,7 +94,6 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile boolean lastResolutionIncomplete;
     private volatile boolean splashCandidateSeenBeforeReady;
     private volatile boolean splashFinishedByHook;
-    private volatile boolean terminalCleaned;
     private int sessionAttempt;
 
     HookCoordinator(XposedModule module, ModuleLog log, ClassLoader primaryLoader) {
@@ -282,32 +288,67 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     // ------------------------------------------------------------------
 
     private void triggerSession(String trigger) {
-        if (state == BootstrapState.READY || state == BootstrapState.DEGRADED) {
-            return;
+        SessionScheduler.SubmitResult result =
+                sessionScheduler.submit(trigger, state.isTerminal(), this::launchSession);
+        if (result == SessionScheduler.SubmitResult.COALESCED) {
+            // The trigger is folded into the follow-up session that runs when
+            // the current one finishes — never dropped, never parallel.
+            log.info("coordinator session coalesced into pending follow-up trigger="
+                    + trigger);
         }
-        if (!sessionRunning.compareAndSet(false, true)) {
-            log.info("coordinator session already running trigger=" + trigger);
-            return;
-        }
+    }
+
+    /**
+     * Starts one session on the resolver worker. Called by the scheduler for
+     * both direct submissions and coalesced follow-ups; at most one session
+     * is in flight at any time.
+     */
+    private void launchSession(String trigger, boolean followUp) {
         int attempt = ++sessionAttempt;
+        if (followUp) {
+            traceAfterContext("sessionPending", "trigger=" + trigger + " attempt=" + attempt);
+            log.info("coordinator sessionPending dispatched trigger=" + trigger
+                    + " attempt=" + attempt);
+        }
         traceAfterContext("sessionStart", "trigger=" + trigger + " attempt=" + attempt);
-        worker.execute(() -> {
-            try {
-                runSession(trigger, attempt);
-            } catch (Throwable throwable) {
-                log.error("coordinator resolution session failed", throwable);
-                traceAfterContext("sessionError", "trigger=" + trigger
-                        + " error=" + throwable
-                        + " stack=" + android.util.Log.getStackTraceString(throwable));
-                markState(BootstrapState.DEGRADED);
-                cleanupTerminal();
-            } finally {
-                sessionRunning.set(false);
-            }
-        });
+        try {
+            worker.execute(() -> {
+                try {
+                    runSession(trigger, attempt);
+                } catch (Throwable throwable) {
+                    log.error("coordinator resolution session failed", throwable);
+                    traceAfterContext("sessionError", "trigger=" + trigger
+                            + " error=" + throwable
+                            + " stack=" + android.util.Log.getStackTraceString(throwable));
+                    markState(BootstrapState.DEGRADED);
+                    cleanupTerminal();
+                } finally {
+                    sessionScheduler.onFinished(state.isTerminal(),
+                            HookCoordinator.this::launchSession);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            // The worker was shut down by a terminal decision between the
+            // scheduler check and this dispatch; release the slot without a
+            // follow-up.
+            log.info("coordinator session dispatch rejected trigger=" + trigger
+                    + " state=" + state);
+            sessionScheduler.onFinished(true, (nextTrigger, nextFollowUp) -> {
+            });
+        }
     }
 
     private void runSession(String trigger, int attempt) {
+        if (state.isTerminal()) {
+            // The deadline terminated the coordinator while this session was
+            // queued/running; its (still useful, additive) results are logged
+            // by the resolvers, but it must not touch lifecycle state.
+            traceAfterContext("sessionDiscarded", "trigger=" + trigger
+                    + " state=" + state + " attempt=" + attempt);
+            log.info("coordinator late session discarded trigger=" + trigger
+                    + " state=" + state);
+            return;
+        }
         if (appContext == null) {
             appContext = currentApplication();
             if (appContext == null) {
@@ -331,13 +372,19 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             log.info("coordinator stable identity: " + identity.describe());
         }
 
-        Map<String, ResolvedTarget> cached = cache.loadTargets(identity);
-        trace.mark("cacheLookupStart", "attempt=" + attempt + " trigger=" + trigger);
-        Map<String, ResolvedTarget> verified = verifyCacheTargets(cached);
+        ResolutionCache.CachedResolution cachedRes = cache.loadResolution(identity);
+        trace.mark("cacheLookupStart", "attempt=" + attempt + " trigger=" + trigger
+                + " persistedSettled=" + cachedRes.coverageSettled);
+        Map<String, ResolvedTarget> verified = verifyCacheTargets(cachedRes.targets);
         if (!verified.isEmpty()) {
             applyTargets(verified, "cache");
         }
-        if (isCoreReady() && isCoverageSettled()) {
+        // Cache-hit READY needs BOTH the persisted anchors-settled flag
+        // (deadline-settled or partial saves must re-resolve) AND every
+        // listed feed method live-hooked in THIS process — staged DEX can
+        // still make some of them unloadable this early.
+        if (isCoreReady() && cachedRes.coverageSettled
+                && cachedFeedMethodsAllLive(cachedRes.targets)) {
             trace.mark("cacheHit", "entries=" + verified.size() + " dexkitScan=false");
             log.info("resolver path=cache hit=true identity=" + identity.shortToken()
                     + " verified=" + verified.size() + " dexkitScan=false state=" + state);
@@ -345,7 +392,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             finishReady("cache");
             return;
         }
-        trace.mark("cacheMiss", "verified=" + verified.size() + " total=" + cached.size()
+        trace.mark("cacheMiss", "verified=" + verified.size()
+                + " total=" + cachedRes.targets.size()
                 + " trigger=" + trigger);
 
         DexKitSession session = ensureSession(trigger);
@@ -398,14 +446,20 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         trace.mark("normalResolveEnd", "targets=" + normal.keySet());
         applyTargets(normal, "dexkit");
 
+        // Real-scan anchor snapshot: an anchor is COMPLETE only when every
+        // feed-shaped method THIS scan discovered for it is live-hooked.
+        List<FeedCoverage.Anchor> anchors = evaluateAnchorCoverage(normal, loader);
+        boolean coverageSettled = FeedCoverage.settledByAnchors(anchors);
+
         Map<String, ResolvedTarget> all = currentTargets();
         if (!all.isEmpty()) {
-            cache.saveTargets(identity, all);
-            trace.mark("cacheSaved", "entries=" + all.size() + " identity=" + identity.shortToken());
+            cache.saveTargets(identity, all, coverageSettled);
+            trace.mark("cacheSaved", "entries=" + all.size()
+                    + " identity=" + identity.shortToken()
+                    + " coverageSettled=" + coverageSettled);
         }
 
         boolean coreReady = isCoreReady();
-        boolean coverageSettled = isCoverageSettled();
         ReadinessPolicy.SessionOutcome outcome =
                 ReadinessPolicy.sessionOutcome(coreReady, coverageSettled);
         lastResolutionIncomplete = outcome != ReadinessPolicy.SessionOutcome.READY;
@@ -414,19 +468,17 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 finishReady("anchors");
                 break;
             case RETRY_COVERAGE:
-                // Core filtering already works, but a known feed anchor is not
-                // live yet: the shell may still append its DEX. Deterministic
-                // retry: the re-armed observer fires on the next business
-                // class load, and lastResolutionIncomplete forces the next
-                // session to rebuild the DexKit bridge so appended DEX of the
-                // same loader becomes visible.
+                // Core filtering already works, but an anchor is not fully
+                // harvested: the shell may still append its DEX, or a hook
+                // install failed. Deterministic retry: the re-armed observer
+                // fires on the next business class load, and
+                // lastResolutionIncomplete forces the next session to rebuild
+                // the DexKit bridge so appended DEX of the same loader
+                // becomes visible.
                 rearmObserverForRetry();
                 markState(BootstrapState.FULL_RESOLVE);
                 log.info("resolver coreReady coveragePending state=FULL_RESOLVE"
-                        + " adHelperHooked="
-                        + entityListHooks.hasHookedInClass(ANCHOR_AD_HELPER_DESCRIPTOR)
-                        + " entityListFragmentHooked="
-                        + entityListHooks.hasHookedInClass(ANCHOR_ENTITY_LIST_FRAGMENT_DESCRIPTOR)
+                        + " coverage=[" + FeedCoverage.describe(anchors) + "]"
                         + " trigger=" + trigger);
                 break;
             default:
@@ -587,21 +639,104 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 entityListHooks.isAccessorsComplete());
     }
 
-    /** Feed coverage converged by anchor classes (see {@link ReadinessPolicy}). */
-    private boolean isCoverageSettled() {
-        return ReadinessPolicy.isCoverageSettledByAnchors(
-                entityListHooks.hasHookedInClass(ANCHOR_AD_HELPER_DESCRIPTOR),
-                entityListHooks.hasHookedInClass(ANCHOR_ENTITY_LIST_FRAGMENT_DESCRIPTOR));
+    /**
+     * Builds the per-anchor coverage snapshot from a REAL resolver scan: the
+     * fallback tier of {@link NormalResolver} scans both anchor classes via
+     * reflection whenever they are loadable, so a loadable anchor always has
+     * all of its declared feed-shaped methods inside {@code scanOutput}.
+     */
+    private List<FeedCoverage.Anchor> evaluateAnchorCoverage(
+            Map<String, ResolvedTarget> scanOutput, ClassLoader loader) {
+        List<FeedCoverage.Anchor> anchors = new ArrayList<>();
+        anchors.add(anchorCoverageFor(ANCHOR_AD_HELPER_DESCRIPTOR, scanOutput, loader));
+        anchors.add(anchorCoverageFor(
+                ANCHOR_ENTITY_LIST_FRAGMENT_DESCRIPTOR, scanOutput, loader));
+        return anchors;
+    }
+
+    private FeedCoverage.Anchor anchorCoverageFor(String classDescriptor,
+                                                  Map<String, ResolvedTarget> scanOutput,
+                                                  ClassLoader loader) {
+        boolean loadable = false;
+        try {
+            loadable = DescriptorUtils.classForName(classDescriptor, loader) != null;
+        } catch (Throwable ignored) {
+        }
+        List<String> discovered = new ArrayList<>();
+        for (ResolvedTarget target : scanOutput.values()) {
+            if (TargetResolver.isFeedKey(target.key)
+                    && classDescriptor.equals(target.classDescriptor)
+                    && target.methodDescriptor != null
+                    && !target.methodDescriptor.isEmpty()) {
+                discovered.add(target.methodDescriptor);
+            }
+        }
+        return FeedCoverage.anchor(classDescriptor, loadable, discovered, descriptor -> {
+            Method method = DescriptorUtils.methodForDescriptor(descriptor, loader);
+            return method != null && entityListHooks.isHooked(method);
+        });
+    }
+
+    /**
+     * Cache-hit guard: every persisted feed method must resolve to a live
+     * installed hook in THIS process. Staged DEX that keeps one of them
+     * unloadable fails here and forces a fresh resolver run.
+     */
+    private boolean cachedFeedMethodsAllLive(Map<String, ResolvedTarget> cachedTargets) {
+        if (cachedTargets.isEmpty()) {
+            return false;
+        }
+        ClassLoader loader = resolveLoader();
+        int feedEntries = 0;
+        for (ResolvedTarget target : cachedTargets.values()) {
+            if (!TargetResolver.isFeedKey(target.key)) {
+                continue;
+            }
+            feedEntries++;
+            Method method = DescriptorUtils.methodForDescriptor(
+                    target.methodDescriptor, loader);
+            if (method == null || !entityListHooks.isHooked(method)) {
+                return false;
+            }
+        }
+        return feedEntries > 0;
     }
 
     private void finishReady(String coverageSource) {
-        markState(BootstrapState.READY);
+        TerminalStateGate.Transition transition = markState(BootstrapState.READY);
+        if (transition != TerminalStateGate.Transition.APPLIED) {
+            // A late session (or an already-READY deadline) cannot flip or
+            // duplicate the terminal decision; results were logged, lifecycle
+            // state stays as decided.
+            log.info("resolver late READY ignored terminal=" + state
+                    + " coverageSettledBy=" + coverageSource);
+            return;
+        }
         cleanupTerminal();
         maybeScheduleBootstrapRetire();
         log.info("resolver fullReady state=READY feedInstalled="
                 + entityListHooks.hookedMethodCount()
-                + " splashInstalled=" + installedSplashClasses
+                + " splashSpecificInstalled=" + installedSplashClasses
+                + " splashCoveredByLegacy=" + splashLegacyCoverageSummary()
                 + " coverageSettledBy=" + coverageSource);
+    }
+
+    /**
+     * Per legacy splash name: whether a specific hook covers it, or only the
+     * always-on passive Instrumentation gate does. Log-only diagnostic that
+     * separates "specific installed" from "safely covered by fallback".
+     */
+    private String splashLegacyCoverageSummary() {
+        StringBuilder sb = new StringBuilder();
+        for (String name : new java.util.TreeSet<>(TargetResolver.LEGACY_SPLASH_CLASS_NAMES)) {
+            if (sb.length() > 0) {
+                sb.append('|');
+            }
+            int lastDot = name.lastIndexOf('.');
+            sb.append(lastDot < 0 ? name : name.substring(lastDot + 1)).append('=')
+                    .append(installedSplashClasses.contains(name) ? "specific" : "passive");
+        }
+        return sb.toString();
     }
 
     /**
@@ -641,11 +776,11 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     }
 
     private void cleanupTerminal() {
-        synchronized (stateLock) {
-            if (terminalCleaned) {
-                return;
-            }
-            terminalCleaned = true;
+        // One-shot regardless of who reached terminal first; idempotent for
+        // the same terminal state and never re-run after a flip attempt was
+        // rejected by the gate.
+        if (!terminalCleaned.tryOnce()) {
+            return;
         }
         mainHandler.removeCallbacksAndMessages(null);
         runtimeDexObserver.close();
@@ -698,8 +833,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 cleanupTerminal();
                 maybeScheduleBootstrapRetire();
                 log.info("resolver watchdog deadline state=DEGRADED"
+                        + " splashSpecificInstalled=" + installedSplashClasses
+                        + " splashCoveredByLegacy=" + splashLegacyCoverageSummary()
                         + " passiveSplashNet=retained");
             }
+            // A terminal decision invalidates every coalesced follow-up.
+            sessionScheduler.cancelPending();
             return;
         }
         if (state == BootstrapState.BOOTSTRAP) {
@@ -713,17 +852,30 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
     }
 
-    private void markState(BootstrapState next) {
+    /**
+     * Delegates to the terminal gate: once READY/DEGRADED is entered it can
+     * never be flipped (not even READY→DEGRADED by a late background
+     * exception, nor DEGRADED→READY by a late session success). Re-marking
+     * the same terminal state is IDEMPOTENT and changes nothing.
+     */
+    private TerminalStateGate.Transition markState(BootstrapState next) {
         synchronized (stateLock) {
-            if (state.isTerminal() && next != BootstrapState.READY
-                    && next != BootstrapState.DEGRADED) {
-                return;
+            TerminalStateGate.Transition transition = stateGate.mark(next);
+            switch (transition) {
+                case APPLIED:
+                    state = next;
+                    traceAfterContext("state", next.name());
+                    log.info("coordinator state=" + next);
+                    break;
+                case REJECTED:
+                    log.info("coordinator state change rejected terminal=" + state
+                            + " attempted=" + next);
+                    break;
+                case IDEMPOTENT:
+                default:
+                    break;
             }
-            if (state != next) {
-                state = next;
-                traceAfterContext("state", next.name());
-                log.info("coordinator state=" + next);
-            }
+            return transition;
         }
     }
 

@@ -47,6 +47,11 @@ final class EntityListHooks {
         return hooked.hasHookedInClass(classDescriptor);
     }
 
+    /** Live per-method probe for the coverage snapshot (installed hooks only). */
+    boolean isHooked(Method method) {
+        return hooked.contains(method);
+    }
+
     /**
      * Hooks one more list transformer. Returns how many hooks were added by
      * this call (0 when the method was already hooked or is unusable).
