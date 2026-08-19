@@ -11,7 +11,7 @@
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；解析结果跨会话累积合并。
 - 多目标覆盖：开屏类 Activity（品牌开屏与广告开屏）全部解析并安装 Hook；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中全部 `(List, boolean) -> List` 业务入口（2.0.1 覆盖广度）。
-- 两层就绪判定：核心过滤可用（开屏 + 至少一个 Feed Hook + getter 完整）与 Feed 覆盖收敛（两个历史锚点类本轮发现的全部 feed 方法均已 Hook，或 20s deadline 兜底收敛）同时满足才进入 READY；覆盖未收敛期间保留 ClassLoader 观察器并周期性重扫，关闭确定性重试路径。
+- 两层就绪判定：核心过滤可用（开屏 + 至少一个 Feed Hook + getter 完整）与 Feed 覆盖收敛（两个历史锚点类本轮发现的全部 feed 方法均已 Hook，或 20s deadline 兜底收敛）同时满足才进入 READY；覆盖未收敛期间临时保留单发 ClassLoader 观察器，并由运行时事件与一次性 8s watchdog 提供有界重扫，在 20s deadline 前完成确定性收敛，形成确定性重试路径。
 - 会话触发合并：解析会话运行期间到来的 runtime-dex / watchdog 触发不会丢失，合并为恰好一轮后续会话；READY/DEGRADED 为真正冻结终态，迟到的后台会话无法翻转，终态后不再残留全局 loadClass 钩子。
 - 解析失败可重试：失败会话会重装 ClassLoader 观察器并强制 DexKit 重建重扫，覆盖加固应用在同一 ClassLoader 上分阶段追加 DEX 的时序。
 - 多版本持久缓存（schema 2）：按 stableTargetIdentity 保存，最多 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入；多目标条目按方法/类 descriptor 稳定编号，跨会话合并不丢目标。

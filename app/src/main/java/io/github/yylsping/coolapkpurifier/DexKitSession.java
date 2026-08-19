@@ -8,8 +8,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * DexKitBridge lifecycle. A bridge is bound to the runtime ClassLoader
- * generation it was created from. It is created only after runtime DEX ready
- * and rebuilt at most once when the observed loader generation changes.
+ * generation it was created from. It is created only after runtime DEX
+ * ready and rebuilt a bounded number of times — at most four bridge
+ * builds/rebuild attempts — when the observed loader generation changes
+ * or an incomplete session forces a rescan of appended DEX.
  */
 final class DexKitSession {
     private final ModuleLog log;
