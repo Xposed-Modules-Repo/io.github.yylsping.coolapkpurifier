@@ -60,5 +60,8 @@ history-apks/
 /coolapk-purifier-history-apks-low-power.md
 /基于静态分析的Issue #3专项排查.md
 
+# User-provided local agent rules
+/AGENTS.md
+
 # Local packaging archive
 /coolapk--last.zip
