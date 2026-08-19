@@ -11,8 +11,9 @@
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；解析结果跨会话累积合并。
 - 多目标覆盖：开屏类 Activity（品牌开屏与广告开屏）全部解析并安装 Hook；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中全部 `(List, boolean) -> List` 业务入口（2.0.1 覆盖广度）。
+- 两层就绪判定：核心过滤可用（开屏 + 至少一个 Feed Hook + getter 完整）与 Feed 覆盖收敛（两个历史锚点类均已 Hook，或 20s deadline 兜底收敛）同时满足才进入 READY；覆盖未收敛期间保留 ClassLoader 观察器并周期性重扫，关闭确定性重试路径。
 - 解析失败可重试：失败会话会重装 ClassLoader 观察器并强制 DexKit 重建重扫，覆盖加固应用在同一 ClassLoader 上分阶段追加 DEX 的时序。
-- 多版本持久缓存：按 stableTargetIdentity 保存，最多 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入。
+- 多版本持久缓存（schema 2）：按 stableTargetIdentity 保存，最多 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入；多目标条目按方法/类 descriptor 稳定编号，跨会话合并不丢目标。
 - 同版本覆盖重装后 identity 不变，直接命中历史缓存；升级/降级到新版本后自动失效重扫。
 - Bootstrap 终态低开销：READY 后关闭 DexKit Bridge、Resolver worker、RuntimeDexObserver、watchdog，Bootstrap 日志冻结；Instrumentation 开屏兜底转为被动模式常驻（仅保留开屏判定，2.0.1 行为），保证 READY/DEGRADED 后全屏广告 Activity 仍被拦截。
 - 无缓存首次适配时显示一次系统 Toast，提示开屏广告可能显示一次。
@@ -26,12 +27,12 @@
 | 已实机验证 | 13.1.1 / 15.9.0 / 16.1.2 / 16.5.1 |
 | Android | 6.0（API 23）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
-| 模块版本 | 2.1.1（versionCode 8） |
+| 模块版本 | 2.1.2（versionCode 9） |
 
 模块不针对任何酷安版本做分支，Hook 目标全部由 DexKit 在运行时解析。若新版本功能失效，请先查看目标应用内：
 
 - `files/coolapk_purifier_bootstrap.log`：启动时序与 Bootstrap 终态日志。
-- `files/coolapk_purifier_cache_v3.json`：多版本解析缓存。
+- `files/coolapk_purifier_cache_v4.json`：多版本解析缓存（schema 2；旧版 v3 缓存不迁移，升级后首次启动自动重解析）。
 - LSPosed 模块日志：Resolver 候选数与 Hook 安装情况。
 
 并提交包含酷安版本号、Android 版本和相关日志的问题报告。

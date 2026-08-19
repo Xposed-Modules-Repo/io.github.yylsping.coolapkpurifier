@@ -21,16 +21,27 @@ import java.util.Map;
  * the complete serialized JSON (including metadata and recovery markers) is
  * never larger than {@link CachePolicy#MAX_TOTAL_BYTES}. versionCode never
  * participates in cache identity or validity.
+ *
+ * <p>Schema 2 (file v4): introduced with the multi-target coverage semantics.
+ * Schema 1 (file v3) was written by 2.1.0/2.1.1 with positional single-feed
+ * entries; those caches describe resolver coverage that no longer matches the
+ * multi-target READY condition, so they are deliberately NOT migrated and NOT
+ * readable. The first launch after the upgrade simply re-resolves and
+ * repopulates the new file; the abandoned v3 file is left in place untouched.
  */
 final class ResolutionCache {
-    static final int RESOLVER_SCHEMA_VERSION = 1;
-    private static final String FILE_NAME = "coolapk_purifier_cache_v3.json";
+    static final int RESOLVER_SCHEMA_VERSION = 2;
+    private static final String FILE_NAME = "coolapk_purifier_cache_v4.json";
 
     private final File file;
     private final Object lock = new Object();
 
     ResolutionCache(Context appContext) {
-        this.file = new File(appContext.getFilesDir(), FILE_NAME);
+        this(appContext.getFilesDir());
+    }
+
+    ResolutionCache(File filesDir) {
+        this.file = new File(filesDir, FILE_NAME);
         File temp = new File(file.getParentFile(), file.getName() + ".tmp");
         if (temp.isFile()) {
             //noinspection ResultOfMethodCallIgnored
@@ -241,26 +252,26 @@ final class ResolutionCache {
             root.put("entries", entries);
 
             byte[] bytes = serialize(root);
+            if (bytes == null) {
+                // Serialization failure never heals by evicting more entries;
+                // retrying would loop forever.
+                return false;
+            }
             String currentProtect = protectKey;
-            while (bytes == null || bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
+            while (bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
                 entries = evictForSize(root.optJSONArray("entries"), currentProtect);
                 root.put("entries", entries);
                 byte[] candidate = serialize(root);
-                if (candidate != null
-                        && candidate.length >= (bytes == null ? Integer.MAX_VALUE : bytes.length)) {
+                if (candidate == null || candidate.length >= bytes.length) {
                     // No progress possible while metadata alone exceeds the
                     // hard budget.
                     return false;
                 }
                 bytes = candidate;
                 currentProtect = null;
-                if (entries.length() == 0 && bytes != null
-                        && bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
+                if (entries.length() == 0 && bytes.length > CachePolicy.MAX_TOTAL_BYTES) {
                     return false;
                 }
-            }
-            if (bytes == null) {
-                return false;
             }
             return CacheAtomicWriter.write(file, bytes, CacheAtomicWriter.RENAME_REPLACE);
         } catch (Throwable ignored) {

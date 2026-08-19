@@ -32,8 +32,13 @@ final class NormalResolver {
     static final String SOURCE_FINGERPRINT_WEAK = "fingerprint_weak";
     static final String SOURCE_FALLBACK = "fallback_compat";
 
-    private static final String AD_HELPER_CLASS = "com.coolapk.market.view.ad.EntityAdHelper";
-    private static final String ENTITY_LIST_FRAGMENT_CLASS =
+    /**
+     * Historically known feed anchor classes. Coverage settling probes the
+     * live hook registry for a hook declared by each of them; a version that
+     * genuinely lacks one anchor simply settles at the deadline instead.
+     */
+    static final String AD_HELPER_CLASS = "com.coolapk.market.view.ad.EntityAdHelper";
+    static final String ENTITY_LIST_FRAGMENT_CLASS =
             "com.coolapk.market.view.cardlist.EntityListFragment";
     private static final String ENTITY_CLASS = "com.coolapk.market.model.Entity";
     private static final String SERIALIZED_NAME_ANNOTATION =

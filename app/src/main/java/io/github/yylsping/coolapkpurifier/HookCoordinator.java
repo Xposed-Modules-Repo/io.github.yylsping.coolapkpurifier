@@ -27,17 +27,29 @@ import io.github.libxposed.api.XposedModule;
  *
  * <pre>
  * BOOTSTRAP → WAIT_RUNTIME_DEX → CACHE_VERIFY → SPLASH_CRITICAL
- *           → SPLASH_READY → FULL_RESOLVE → READY
+ *           → FULL_RESOLVE → READY
  * failure: DEGRADED
  * </pre>
  *
  * Normal triggers are Application.attach, runtime class load and Activity
- * pre-create. Timer watchdogs are only a last-resort fallback.
+ * pre-create. Timer watchdogs are only a last-resort fallback: the 8s watchdog
+ * retries a session from ANY non-terminal state (including FULL_RESOLVE with
+ * unsettled feed coverage), and the 20s deadline takes precedence over every
+ * intermediate state and always terminates (READY when core filtering works,
+ * DEGRADED otherwise). READY itself is two-layer: core hooks installed AND
+ * feed coverage settled (both anchor classes hooked, or deadline).
  */
 final class HookCoordinator implements SplashHooks.ActivityObserver,
         RuntimeDexObserver.Listener {
     private static final long WATCHDOG_DELAY_MILLIS = 8_000L;
     private static final long DEADLINE_MILLIS = 20_000L;
+    private static final String WATCHDOG_RETRY_REASON = "watchdog 8s";
+    private static final String WATCHDOG_DEADLINE_REASON = "watchdog 20s deadline";
+
+    private static final String ANCHOR_AD_HELPER_DESCRIPTOR =
+            DescriptorUtils.classDescriptorOf(NormalResolver.AD_HELPER_CLASS);
+    private static final String ANCHOR_ENTITY_LIST_FRAGMENT_DESCRIPTOR =
+            DescriptorUtils.classDescriptorOf(NormalResolver.ENTITY_LIST_FRAGMENT_CLASS);
 
     private final XposedModule module;
     private final ModuleLog log;
@@ -97,8 +109,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         runtimeDexObserver.install();
         installApplicationAttachHook();
 
-        mainHandler.postDelayed(() -> watchdog("watchdog 8s"), WATCHDOG_DELAY_MILLIS);
-        mainHandler.postDelayed(() -> watchdog("watchdog 20s deadline"), DEADLINE_MILLIS);
+        mainHandler.postDelayed(() -> watchdog(WATCHDOG_RETRY_REASON), WATCHDOG_DELAY_MILLIS);
+        mainHandler.postDelayed(() -> watchdog(WATCHDOG_DEADLINE_REASON), DEADLINE_MILLIS);
     }
 
     // ------------------------------------------------------------------
@@ -237,6 +249,19 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         triggerSession("runtimeDex:" + trigger);
     }
 
+    /**
+     * Rearms the runtime-dex observer for the next retry, but never after a
+     * terminal state: a resolution session that is still running when the 20s
+     * deadline terminates the coordinator must not resurrect the closed
+     * loadClass hooks (they would then stay installed for the whole process).
+     */
+    private void rearmObserverForRetry() {
+        if (state == BootstrapState.READY || state == BootstrapState.DEGRADED) {
+            return;
+        }
+        runtimeDexObserver.rearm();
+    }
+
     private void onRuntimeLoaderChanged(ClassLoader loader, String reason) {
         long previous = activeRuntimeLoader == null
                 ? -1L : System.identityHashCode(activeRuntimeLoader);
@@ -249,7 +274,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         closeSession(reason);
         lastResolutionIncomplete = false;
         activeRuntimeLoader = loader;
-        runtimeDexObserver.rearm();
+        rearmObserverForRetry();
     }
 
     // ------------------------------------------------------------------
@@ -312,12 +337,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (!verified.isEmpty()) {
             applyTargets(verified, "cache");
         }
-        if (isSplashReady() && areNormalTargetsReady()) {
+        if (isCoreReady() && isCoverageSettled()) {
             trace.mark("cacheHit", "entries=" + verified.size() + " dexkitScan=false");
             log.info("resolver path=cache hit=true identity=" + identity.shortToken()
                     + " verified=" + verified.size() + " dexkitScan=false state=" + state);
             lastResolutionIncomplete = false;
-            finishReady();
+            finishReady("cache");
             return;
         }
         trace.mark("cacheMiss", "verified=" + verified.size() + " total=" + cached.size()
@@ -327,6 +352,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (session == null) {
             markState(BootstrapState.WAIT_RUNTIME_DEX);
             lastResolutionIncomplete = true;
+            rearmObserverForRetry();
             return;
         }
         if (lastResolutionIncomplete) {
@@ -340,6 +366,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             markState(BootstrapState.WAIT_RUNTIME_DEX);
             log.info("resolver bridge unavailable state=WAIT_RUNTIME_DEX trigger=" + trigger);
             lastResolutionIncomplete = true;
+            rearmObserverForRetry();
             return;
         }
 
@@ -360,7 +387,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             applyTargets(splashTargets, "dexkit");
         } else {
             markState(BootstrapState.WAIT_RUNTIME_DEX);
-            runtimeDexObserver.rearm();
+            rearmObserverForRetry();
             log.info("resolver splash retryable state=WAIT_RUNTIME_DEX"
                     + " reason=zeroOrUnverifiableCandidates trigger=" + trigger);
         }
@@ -377,18 +404,46 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             trace.mark("cacheSaved", "entries=" + all.size() + " identity=" + identity.shortToken());
         }
 
-        boolean complete = isSplashReady() && areNormalTargetsReady();
-        lastResolutionIncomplete = !complete;
-        if (complete) {
-            finishReady();
-        } else if (isSplashReady()) {
-            markState(BootstrapState.FULL_RESOLVE);
-            log.info("resolver splashReady normalIncomplete state=FULL_RESOLVE");
-        } else {
-            // A zero-candidate splash is retryable and must not be terminal.
-            log.info("resolver incomplete splash=" + isSplashReady()
-                    + " normal=" + areNormalTargetsReady()
-                    + " state=RETRYABLE trigger=" + trigger);
+        boolean coreReady = isCoreReady();
+        boolean coverageSettled = isCoverageSettled();
+        ReadinessPolicy.SessionOutcome outcome =
+                ReadinessPolicy.sessionOutcome(coreReady, coverageSettled);
+        lastResolutionIncomplete = outcome != ReadinessPolicy.SessionOutcome.READY;
+        switch (outcome) {
+            case READY:
+                finishReady("anchors");
+                break;
+            case RETRY_COVERAGE:
+                // Core filtering already works, but a known feed anchor is not
+                // live yet: the shell may still append its DEX. Deterministic
+                // retry: the re-armed observer fires on the next business
+                // class load, and lastResolutionIncomplete forces the next
+                // session to rebuild the DexKit bridge so appended DEX of the
+                // same loader becomes visible.
+                rearmObserverForRetry();
+                markState(BootstrapState.FULL_RESOLVE);
+                log.info("resolver coreReady coveragePending state=FULL_RESOLVE"
+                        + " adHelperHooked="
+                        + entityListHooks.hasHookedInClass(ANCHOR_AD_HELPER_DESCRIPTOR)
+                        + " entityListFragmentHooked="
+                        + entityListHooks.hasHookedInClass(ANCHOR_ENTITY_LIST_FRAGMENT_DESCRIPTOR)
+                        + " trigger=" + trigger);
+                break;
+            default:
+                // Core capability still missing (splash, feed hooks or
+                // accessors). Also deterministically retried: observer
+                // re-armed here, 8s watchdog retries FULL_RESOLVE too.
+                rearmObserverForRetry();
+                if (isSplashReady()) {
+                    markState(BootstrapState.FULL_RESOLVE);
+                    log.info("resolver splashReady coreIncomplete state=FULL_RESOLVE"
+                            + " trigger=" + trigger);
+                } else {
+                    // A zero-candidate splash is retryable and must not be terminal.
+                    log.info("resolver incomplete splash=false core=false"
+                            + " state=RETRYABLE trigger=" + trigger);
+                }
+                break;
         }
 
         maybeRecoverAfterSplashResolved();
@@ -453,7 +508,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         ClassLoader loader = resolveLoader();
         Map<String, ResolvedTarget> merged;
         synchronized (resolvedTargets) {
-            resolvedTargets.putAll(targets);
+            // Descriptor-stable merge: an existing descriptor keeps its key,
+            // so candidate order changes across sessions can never overwrite
+            // an unrelated persisted entry.
+            TargetResolver.mergeTargets(resolvedTargets, targets);
             merged = new LinkedHashMap<>(resolvedTargets);
         }
         // Accessors must be rebuilt from the COMPLETE merged target map: an
@@ -522,18 +580,28 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         return !installedSplashClasses.isEmpty();
     }
 
-    private boolean areNormalTargetsReady() {
-        return entityListHooks.hookedMethodCount() > 0
-                && entityListHooks.isAccessorsComplete();
+    /** Core ad-filtering capability: splash covered, live feed hooks, accessors complete. */
+    private boolean isCoreReady() {
+        return ReadinessPolicy.isCoreReady(isSplashReady(),
+                entityListHooks.hookedMethodCount(),
+                entityListHooks.isAccessorsComplete());
     }
 
-    private void finishReady() {
+    /** Feed coverage converged by anchor classes (see {@link ReadinessPolicy}). */
+    private boolean isCoverageSettled() {
+        return ReadinessPolicy.isCoverageSettledByAnchors(
+                entityListHooks.hasHookedInClass(ANCHOR_AD_HELPER_DESCRIPTOR),
+                entityListHooks.hasHookedInClass(ANCHOR_ENTITY_LIST_FRAGMENT_DESCRIPTOR));
+    }
+
+    private void finishReady(String coverageSource) {
         markState(BootstrapState.READY);
         cleanupTerminal();
         maybeScheduleBootstrapRetire();
         log.info("resolver fullReady state=READY feedInstalled="
                 + entityListHooks.hookedMethodCount()
-                + " splashInstalled=" + installedSplashClasses);
+                + " splashInstalled=" + installedSplashClasses
+                + " coverageSettledBy=" + coverageSource);
     }
 
     /**
@@ -611,20 +679,37 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (state == BootstrapState.READY) {
             return;
         }
-        if (state == BootstrapState.WAIT_RUNTIME_DEX || state == BootstrapState.CACHE_VERIFY) {
-            triggerSession(reason);
+        if (WATCHDOG_DEADLINE_REASON.equals(reason)) {
+            // Deadline semantics take precedence over ANY intermediate state:
+            // a process stuck in WAIT_RUNTIME_DEX/CACHE_VERIFY/... at 20s must
+            // still terminate here instead of returning early and suspending
+            // forever. Coverage settles by definition at the deadline, so a
+            // core-ready process finishes READY; a core-incapable one is
+            // DEGRADED. The passive Instrumentation splash safety net is
+            // retained in both cases (SplashHooks are never unhooked).
+            boolean coreReady = isCoreReady();
+            BootstrapState terminal = ReadinessPolicy.deadlineTerminalState(coreReady);
+            log.info("resolver watchdog deadline intermediateState=" + state
+                    + " coreReady=" + coreReady + " terminal=" + terminal);
+            if (terminal == BootstrapState.READY) {
+                finishReady("deadline");
+            } else {
+                markState(BootstrapState.DEGRADED);
+                cleanupTerminal();
+                maybeScheduleBootstrapRetire();
+                log.info("resolver watchdog deadline state=DEGRADED"
+                        + " passiveSplashNet=retained");
+            }
             return;
         }
         if (state == BootstrapState.BOOTSTRAP) {
             markState(BootstrapState.WAIT_RUNTIME_DEX);
-            triggerSession(reason);
-            return;
         }
-        if ("watchdog 20s deadline".equals(reason)) {
-            markState(BootstrapState.DEGRADED);
-            cleanupTerminal();
-            maybeScheduleBootstrapRetire();
-            log.info("resolver watchdog deadline state=DEGRADED");
+        if (ReadinessPolicy.shouldWatchdogRetrySession(state)) {
+            // Retry from every non-terminal state, FULL_RESOLVE included:
+            // core-ready-but-coverage-pending must not depend on further
+            // class loading to get its next resolution session.
+            triggerSession(reason);
         }
     }
 

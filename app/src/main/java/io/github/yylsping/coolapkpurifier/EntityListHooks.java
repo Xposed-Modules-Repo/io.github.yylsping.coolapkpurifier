@@ -23,7 +23,7 @@ final class EntityListHooks {
     private final ModuleLog log;
     private final EntityClassifier classifier = new EntityClassifier();
     private final EntityListFilter filter = new EntityListFilter(classifier);
-    private final Set<Method> hookedMethods = new HashSet<>();
+    private final HookedFeedRegistry hooked = new HookedFeedRegistry();
     private final Map<Method, HookHandle> handles = new HashMap<>();
     private volatile boolean accessorsComplete;
 
@@ -42,12 +42,17 @@ final class EntityListHooks {
         return accessorsComplete;
     }
 
+    /** Live-anchor probe for coverage settling; sees installed hooks only. */
+    boolean hasHookedInClass(String classDescriptor) {
+        return hooked.hasHookedInClass(classDescriptor);
+    }
+
     /**
      * Hooks one more list transformer. Returns how many hooks were added by
      * this call (0 when the method was already hooked or is unusable).
      */
     synchronized int install(Method method) {
-        if (method == null || hookedMethods.contains(method)) {
+        if (method == null || hooked.contains(method)) {
             return 0;
         }
         try {
@@ -73,7 +78,7 @@ final class EntityListHooks {
                         }
                     });
             handles.put(method, handle);
-            hookedMethods.add(method);
+            hooked.add(method);
             log.info("installed feed filter hook method=" + method);
             return 1;
         } catch (Throwable throwable) {
@@ -94,6 +99,6 @@ final class EntityListHooks {
     }
 
     synchronized int hookedMethodCount() {
-        return hookedMethods.size();
+        return hooked.size();
     }
 }

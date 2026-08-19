@@ -54,5 +54,9 @@ history-apks/
 # User-provided cache finalization brief
 /Stable 最终缓存收尾.md
 
+# User-provided issue #3 follow-up briefs
+/coolapk-purifier-issue3-followup-fix-prompt.md
+/基于静态分析的Issue #3专项排查.md
+
 # Local packaging archive
 /coolapk--last.zip

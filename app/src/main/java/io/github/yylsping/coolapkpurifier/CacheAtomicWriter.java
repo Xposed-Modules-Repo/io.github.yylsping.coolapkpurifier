@@ -13,8 +13,22 @@ final class CacheAtomicWriter {
         boolean replace(File temp, File destination);
     }
 
-    static final ReplaceOperation RENAME_REPLACE =
-            (temp, destination) -> temp.renameTo(destination);
+    /**
+     * Primary path is a single atomic rename (POSIX/Android replaces the
+     * destination atomically). Some file systems — notably Windows, where the
+     * unit tests run — refuse to rename onto an existing file, so a
+     * delete+rename fallback keeps the write from being permanently impossible
+     * there; it never runs on Android in practice.
+     */
+    static final ReplaceOperation RENAME_REPLACE = (temp, destination) -> {
+        if (temp.renameTo(destination)) {
+            return true;
+        }
+        if (destination.delete() || !destination.exists()) {
+            return temp.renameTo(destination);
+        }
+        return false;
+    };
 
     private CacheAtomicWriter() {
     }

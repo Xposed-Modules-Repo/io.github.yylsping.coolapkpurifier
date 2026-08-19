@@ -98,13 +98,55 @@ public final class RuntimeDexObserverTest {
         assertEquals("firstActivityPre", listener.triggers.get(0));
     }
 
+    /**
+     * Tightened race: two threads rearming while the installer is still
+     * running (handles not yet registered) used to both observe an empty
+     * handle list and install the loadClass hooks twice.
+     */
+    @Test
+    public void concurrentRearmsInstallHooksExactlyOnce() throws Exception {
+        installer.slowMode = true;
+        observer.install();
+        // Close the hooks (single-shot fire) so rearm actually has to
+        // reinstall; the race window is between rearm() and handle
+        // registration inside the still-running installer.
+        observer.onClassLoaded(MainActivity.class);
+        assertEquals(1, installer.installCount);
+
+        java.util.concurrent.CyclicBarrier barrier = new java.util.concurrent.CyclicBarrier(2);
+        Runnable rearm = () -> {
+            try {
+                barrier.await();
+                observer.rearm();
+            } catch (Exception ignored) {
+            }
+        };
+        Thread first = new Thread(rearm, "rearm-1");
+        Thread second = new Thread(rearm, "rearm-2");
+        first.start();
+        second.start();
+        first.join(5_000);
+        second.join(5_000);
+
+        assertEquals(2, installer.installCount);
+        assertTrue(observer.isArmed());
+    }
+
     private static final class RecordingInstaller implements RuntimeDexObserver.HookInstaller {
         int installCount;
+        boolean slowMode;
         RuntimeDexObserver observer;
 
         @Override
         public void installLoadClassHooks() {
             installCount++;
+            if (slowMode) {
+                try {
+                    Thread.sleep(150);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             // Mirror the real installer contract: register both handles.
             observer.addHandle(new FakeHandle());
             observer.addHandle(new FakeHandle());

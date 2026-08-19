@@ -33,6 +33,13 @@ final class RuntimeDexObserver {
     private final XposedModule module;
     private final List<HookHandle> handles = new ArrayList<>();
     private boolean armed;
+    /**
+     * Guards against concurrent hook installation. Two threads calling
+     * rearm() while the installer is still running (handles not yet
+     * registered) used to both observe an empty handle list and install the
+     * loadClass hooks twice.
+     */
+    private boolean installing;
 
     RuntimeDexObserver(XposedModule module, ModuleLog log, Listener listener) {
         this(module, log, listener, null);
@@ -51,13 +58,7 @@ final class RuntimeDexObserver {
     }
 
     void install() {
-        synchronized (this) {
-            if (armed || !handles.isEmpty()) {
-                return;
-            }
-            armed = true;
-        }
-        installHooks("install");
+        ensureArmedAndHooked("install");
     }
 
     /**
@@ -68,13 +69,27 @@ final class RuntimeDexObserver {
      * loadClass hooks, permanently blinding the observer.
      */
     void rearm() {
+        ensureArmedAndHooked("rearm");
+    }
+
+    private void ensureArmedAndHooked(String reason) {
         boolean needInstall;
         synchronized (this) {
             armed = true;
-            needInstall = handles.isEmpty();
+            needInstall = handles.isEmpty() && !installing;
+            if (needInstall) {
+                installing = true;
+            }
         }
-        if (needInstall) {
-            installHooks("rearm");
+        if (!needInstall) {
+            return;
+        }
+        try {
+            installHooks(reason);
+        } finally {
+            synchronized (this) {
+                installing = false;
+            }
         }
     }
 

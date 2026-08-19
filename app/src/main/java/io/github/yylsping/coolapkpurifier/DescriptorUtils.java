@@ -8,6 +8,15 @@ final class DescriptorUtils {
     private DescriptorUtils() {
     }
 
+    /** Dex class descriptor ("Lcom/example/Foo;") for a dotted class name or Class. */
+    static String classDescriptorOf(String dottedName) {
+        return "L" + dottedName.replace('.', '/') + ";";
+    }
+
+    static String classDescriptorOf(Class<?> type) {
+        return classDescriptorOf(type.getName());
+    }
+
     static Class<?> classForName(String nameOrDescriptor, ClassLoader loader)
             throws ClassNotFoundException {
         if (nameOrDescriptor == null || nameOrDescriptor.isEmpty()) {

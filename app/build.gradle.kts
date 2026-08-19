@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.yylsping.coolapkpurifier"
         minSdk = 23
         targetSdk = 35
-        versionCode = 8
-        versionName = "2.1.1"
+        versionCode = 9
+        versionName = "2.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -90,4 +90,8 @@ dependencies {
     compileOnly("org.jetbrains.kotlin:kotlin-stdlib:1.5.0")
     implementation("org.luckypray:dexkit:2.0.6")
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for unit tests: the android.jar stub returns defaults
+    // (null) from JSONObject methods, which would silently break every
+    // cache serialization test.
+    testImplementation("org.json:json:20240303")
 }
