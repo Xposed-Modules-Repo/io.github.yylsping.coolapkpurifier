@@ -14,6 +14,12 @@ final class TargetResolver {
     static final String KEY_GETTER_ENTITY_ID = "getter.entityId";
     static final String KEY_GETTER_TITLE = "getter.title";
     static final String KEY_GETTER_ENTITY_TYPE = "getter.entityType";
+    static final String KEY_SPLASH_DECISION = "feature.splashDecision";
+    static final String KEY_AUTO_COMMENT = "feature.autoComment";
+    static final String KEY_TOPIC_RECOMMEND = "feature.topicRecommend";
+    static final String KEY_RELATED_DATA = "feature.relatedData";
+    static final String KEY_SAME_TOPIC_FEED = "feature.sameTopicFeed";
+    static final String KEY_DETAIL_SPONSOR = "feature.detailSponsor";
 
     /**
      * Historically observed splash-family activity names. Used as a reflection
@@ -38,6 +44,10 @@ final class TargetResolver {
     static boolean isSplashKey(String key) {
         return key != null
                 && (key.equals(KEY_SPLASH_BASE) || key.startsWith(KEY_SPLASH_BASE + "#"));
+    }
+
+    static boolean isFeatureKey(String key) {
+        return key != null && key.startsWith("feature.");
     }
 
     static String indexedKey(String base, int index) {

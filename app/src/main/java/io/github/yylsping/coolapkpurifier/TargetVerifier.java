@@ -26,9 +26,14 @@ final class TargetVerifier {
             }
             // Splash targets may legitimately carry an empty method descriptor;
             // the real onCreate is located at install time via findOnCreate.
+            // Dedicated renderer targets are class-only records: the actual
+            // suppression uses their stable layout resource names.
             if (target.methodDescriptor == null || target.methodDescriptor.isEmpty()) {
-                return TargetResolver.isSplashKey(target.key)
-                        && Activity.class.isAssignableFrom(type)
+                if (TargetResolver.isSplashKey(target.key)
+                        && Activity.class.isAssignableFrom(type)) {
+                    return null;
+                }
+                return isVerifiedFeatureClass(target.key, type)
                         ? null : "empty method descriptor";
             }
             Method method = DescriptorUtils.methodForDescriptor(target.methodDescriptor, loader);
@@ -45,6 +50,21 @@ final class TargetVerifier {
                             && method.getParameterTypes().length == 1
                             && method.getParameterTypes()[0] == Bundle.class
                             ? null : "splash shape mismatch";
+                case TargetResolver.KEY_SPLASH_DECISION:
+                    return isBoolean(method.getReturnType())
+                            && !Modifier.isAbstract(method.getModifiers())
+                            ? null : "splash decision shape mismatch";
+                case TargetResolver.KEY_AUTO_COMMENT:
+                    return "addAutoShowFeedCommentView".equals(method.getName())
+                            && method.getDeclaringClass().getName().contains(
+                            "RecyclerViewItemFullVisibleControllerKt")
+                            && !Modifier.isAbstract(method.getModifiers())
+                            ? null : "auto comment shape mismatch";
+                case TargetResolver.KEY_TOPIC_RECOMMEND:
+                    return isBoolean(method.getReturnType())
+                            && method.getDeclaringClass().getName().contains("TopicRecommend")
+                            && !Modifier.isAbstract(method.getModifiers())
+                            ? null : "topic recommend shape mismatch";
                 default:
                     return method.getParameterTypes().length == 0
                             && method.getReturnType() == String.class
@@ -53,6 +73,24 @@ final class TargetVerifier {
         } catch (Throwable throwable) {
             return String.valueOf(throwable);
         }
+    }
+
+    private static boolean isBoolean(Class<?> type) {
+        return type == boolean.class || type == Boolean.class;
+    }
+
+    private static boolean isVerifiedFeatureClass(String key, Class<?> type) {
+        String name = type.getName();
+        if (TargetResolver.KEY_RELATED_DATA.equals(key)) {
+            return name.endsWith(".RelatedDataViewHolder");
+        }
+        if (TargetResolver.KEY_SAME_TOPIC_FEED.equals(key)) {
+            return name.endsWith(".RecommendFeed");
+        }
+        if (TargetResolver.KEY_DETAIL_SPONSOR.equals(key)) {
+            return name.endsWith(".SponsorSelfDrawDetailViewHolder");
+        }
+        return false;
     }
 
     /** Normalizes feed#2 / splash_base#2 style keys to their base key. */

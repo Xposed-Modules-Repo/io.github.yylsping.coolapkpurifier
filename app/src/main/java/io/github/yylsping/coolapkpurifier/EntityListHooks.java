@@ -1,12 +1,16 @@
 package io.github.yylsping.coolapkpurifier;
 
+import android.view.View;
+import android.view.ViewGroup;
+
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.WeakHashMap;
 
 import io.github.libxposed.api.XposedInterface.ExceptionMode;
 import io.github.libxposed.api.XposedInterface.HookHandle;
@@ -25,11 +29,16 @@ final class EntityListHooks {
     private final EntityListFilter filter = new EntityListFilter(classifier);
     private final HookedFeedRegistry hooked = new HookedFeedRegistry();
     private final Map<Method, HookHandle> handles = new HashMap<>();
+    private final Map<View, ReplyViewState> collapsedReplyViews = new WeakHashMap<>();
     private volatile boolean accessorsComplete;
 
     EntityListHooks(XposedModule module, ModuleLog log) {
         this.module = module;
         this.log = log;
+    }
+
+    void setConfig(PurifierConfig config) {
+        classifier.setConfig(config);
     }
 
     void updateAccessors(Map<String, ResolvedTarget> targets, ClassLoader loader) {
@@ -103,7 +112,114 @@ final class EntityListHooks {
         return installed;
     }
 
+    /**
+     * Covers detail reply ads inserted after the normal list transformer. The
+     * dedicated 15/16 holder is stable even when its bind methods are obfuscated.
+     */
+    synchronized int installReplyHolder(Class<?> holderClass) {
+        if (holderClass == null || !"com.coolapk.market.viewholder.MultiFeedReplyViewHolder"
+                .equals(holderClass.getName())) {
+            return 0;
+        }
+        int installed = 0;
+        for (Method method : holderClass.getDeclaredMethods()) {
+            if (Modifier.isStatic(method.getModifiers()) || method.getParameterCount() != 1
+                    || method.getReturnType() != void.class) {
+                continue;
+            }
+            String argumentType = method.getParameterTypes()[0].getName();
+            if (!"com.coolapk.market.model.Entity".equals(argumentType)
+                    && !"com.coolapk.market.model.FeedReply".equals(argumentType)) {
+                continue;
+            }
+            if (handles.containsKey(method)) {
+                continue;
+            }
+            try {
+                HookHandle handle = module.hook(method)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .setId("coolapk-reply-sponsor-holder-"
+                                + Integer.toHexString(method.toGenericString().hashCode()))
+                        .intercept(chain -> {
+                            Object result = chain.proceed();
+                            try {
+                                boolean sponsored = classifier.isSponsored(chain.getArg(0));
+                                updateReplyHolder(chain.getThisObject(), sponsored);
+                                if (sponsored) {
+                                    log.info("removed reply sponsor via " + method);
+                                }
+                            } catch (Throwable throwable) {
+                                log.error("reply sponsor holder filtering failed", throwable);
+                            }
+                            return result;
+                        });
+                handles.put(method, handle);
+                installed++;
+                log.info("installed reply sponsor holder hook method=" + method);
+            } catch (Throwable throwable) {
+                log.error("reply sponsor holder hook install failed method=" + method,
+                        throwable);
+            }
+        }
+        return installed;
+    }
+
+    private void updateReplyHolder(Object holder, boolean sponsored) throws Exception {
+        Field itemViewField = holder.getClass().getField("itemView");
+        Object candidate = itemViewField.get(holder);
+        if (!(candidate instanceof View)) {
+            return;
+        }
+        View itemView = (View) candidate;
+        if (!sponsored) {
+            ReplyViewState state = collapsedReplyViews.remove(itemView);
+            if (state != null) {
+                state.restore(itemView);
+            }
+            return;
+        }
+        if (!collapsedReplyViews.containsKey(itemView)) {
+            collapsedReplyViews.put(itemView, ReplyViewState.capture(itemView));
+        }
+        itemView.setVisibility(View.GONE);
+        itemView.setMinimumHeight(0);
+        ViewGroup.LayoutParams params = itemView.getLayoutParams();
+        if (params != null && params.height != 0) {
+            params.height = 0;
+            itemView.setLayoutParams(params);
+        }
+    }
+
     synchronized int hookedMethodCount() {
         return hooked.size();
+    }
+
+    private static final class ReplyViewState {
+        private final int visibility;
+        private final int minimumHeight;
+        private final int layoutHeight;
+
+        private ReplyViewState(int visibility, int minimumHeight, int layoutHeight) {
+            this.visibility = visibility;
+            this.minimumHeight = minimumHeight;
+            this.layoutHeight = layoutHeight;
+        }
+
+        static ReplyViewState capture(View view) {
+            ViewGroup.LayoutParams params = view.getLayoutParams();
+            return new ReplyViewState(view.getVisibility(), view.getMinimumHeight(),
+                    params == null ? Integer.MIN_VALUE : params.height);
+        }
+
+        void restore(View view) {
+            view.setVisibility(visibility);
+            view.setMinimumHeight(minimumHeight);
+            ViewGroup.LayoutParams params = view.getLayoutParams();
+            if (params != null && layoutHeight != Integer.MIN_VALUE
+                    && params.height != layoutHeight) {
+                params.height = layoutHeight;
+                view.setLayoutParams(params);
+            }
+        }
     }
 }
