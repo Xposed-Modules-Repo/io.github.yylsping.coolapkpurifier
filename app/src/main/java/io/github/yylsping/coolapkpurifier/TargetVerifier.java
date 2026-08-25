@@ -1,6 +1,7 @@
 package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
+import android.content.Context;
 import android.os.Bundle;
 
 import java.lang.reflect.Method;
@@ -51,20 +52,20 @@ final class TargetVerifier {
                             && method.getParameterTypes()[0] == Bundle.class
                             ? null : "splash shape mismatch";
                 case TargetResolver.KEY_SPLASH_DECISION:
-                    return isBoolean(method.getReturnType())
-                            && !Modifier.isAbstract(method.getModifiers())
+                    return isSplashDecision(method)
                             ? null : "splash decision shape mismatch";
                 case TargetResolver.KEY_AUTO_COMMENT:
-                    return "addAutoShowFeedCommentView".equals(method.getName())
-                            && method.getDeclaringClass().getName().contains(
-                            "RecyclerViewItemFullVisibleControllerKt")
-                            && !Modifier.isAbstract(method.getModifiers())
+                    return isAutoCommentEntry(method)
                             ? null : "auto comment shape mismatch";
                 case TargetResolver.KEY_TOPIC_RECOMMEND:
-                    return isBoolean(method.getReturnType())
-                            && method.getDeclaringClass().getName().contains("TopicRecommend")
-                            && !Modifier.isAbstract(method.getModifiers())
+                    return isTopicRecommendMethod(method)
                             ? null : "topic recommend shape mismatch";
+                case TargetResolver.KEY_DETAIL_SPONSOR:
+                    return isDetailSponsorGetter(method)
+                            ? null : "detail sponsor getter shape mismatch";
+                case TargetResolver.KEY_SAME_TOPIC_FEED:
+                    return isSameTopicTemplatePredicate(method)
+                            ? null : "same topic template predicate shape mismatch";
                 default:
                     return method.getParameterTypes().length == 0
                             && method.getReturnType() == String.class
@@ -79,16 +80,84 @@ final class TargetVerifier {
         return type == boolean.class || type == Boolean.class;
     }
 
+    static boolean isSplashDecision(Method method) {
+        Class<?>[] parameters = method.getParameterTypes();
+        return Modifier.isStatic(method.getModifiers())
+                && !Modifier.isAbstract(method.getModifiers())
+                && isBoolean(method.getReturnType())
+                && parameters.length == 3
+                && parameters[0] == Context.class
+                && !parameters[1].isPrimitive()
+                && parameters[2] == String.class;
+    }
+
+    static boolean isTopicRecommendMethod(Method method) {
+        if (Modifier.isAbstract(method.getModifiers())) {
+            return false;
+        }
+        if (isBoolean(method.getReturnType())
+                && method.getDeclaringClass().getName().contains("TopicRecommend")) {
+            return true;
+        }
+        Class<?>[] parameters = method.getParameterTypes();
+        return Modifier.isStatic(method.getModifiers())
+                && "kotlin.Unit".equals(method.getReturnType().getName())
+                && parameters.length == 4
+                && "com.coolapk.market.model.Feed".equals(parameters[0].getName())
+                && parameters[1] == method.getDeclaringClass()
+                && "androidx.compose.runtime.Composer".equals(parameters[2].getName())
+                && parameters[3] == int.class;
+    }
+
+    static boolean isAutoCommentEntry(Method method) {
+        Class<?>[] parameters = method.getParameterTypes();
+        return Modifier.isStatic(method.getModifiers())
+                && !Modifier.isAbstract(method.getModifiers())
+                && method.getReturnType() == void.class
+                && parameters.length == 1
+                && "com.coolapk.market.view.cardlist.EntityListFragment".equals(
+                parameters[0].getName())
+                && "com.coolapk.market.view.cardlist.component."
+                .concat("RecyclerViewItemFullVisibleControllerKt")
+                .equals(method.getDeclaringClass().getName());
+    }
+
+    static boolean isDetailSponsorGetter(Method method) {
+        return "getDetailSponsorCard".equals(method.getName())
+                && method.getParameterTypes().length == 0
+                && "com.coolapk.market.model.Entity".equals(
+                method.getReturnType().getName())
+                && !Modifier.isAbstract(method.getModifiers())
+                && inheritsFrom(method.getDeclaringClass(),
+                "com.coolapk.market.model.Feed");
+    }
+
+    static boolean isSameTopicTemplatePredicate(Method method) {
+        Class<?>[] parameters = method.getParameterTypes();
+        return Modifier.isStatic(method.getModifiers())
+                && !Modifier.isAbstract(method.getModifiers())
+                && method.getReturnType() == boolean.class
+                && parameters.length == 1
+                && parameters[0] == Object.class
+                && inheritsFrom(method.getDeclaringClass(),
+                "com.coolapk.market.view.cardlist.EntityListFragment");
+    }
+
+    private static boolean inheritsFrom(Class<?> type, String parentName) {
+        Class<?> cursor = type;
+        while (cursor != null) {
+            if (parentName.equals(cursor.getName())) {
+                return true;
+            }
+            cursor = cursor.getSuperclass();
+        }
+        return false;
+    }
+
     private static boolean isVerifiedFeatureClass(String key, Class<?> type) {
         String name = type.getName();
         if (TargetResolver.KEY_RELATED_DATA.equals(key)) {
             return name.endsWith(".RelatedDataViewHolder");
-        }
-        if (TargetResolver.KEY_SAME_TOPIC_FEED.equals(key)) {
-            return name.endsWith(".RecommendFeed");
-        }
-        if (TargetResolver.KEY_DETAIL_SPONSOR.equals(key)) {
-            return name.endsWith(".SponsorSelfDrawDetailViewHolder");
         }
         return false;
     }

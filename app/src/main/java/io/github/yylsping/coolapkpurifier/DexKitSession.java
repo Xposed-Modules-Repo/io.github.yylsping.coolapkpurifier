@@ -1,5 +1,6 @@
 package io.github.yylsping.coolapkpurifier;
 
+import android.content.Context;
 import android.os.SystemClock;
 
 import org.luckypray.dexkit.DexKitBridge;
@@ -7,16 +8,27 @@ import org.luckypray.dexkit.DexKitBridge;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * DexKitBridge lifecycle. A bridge is bound to the runtime ClassLoader
- * generation it was created from. It is created only after runtime DEX
- * ready and rebuilt a bounded number of times — at most four bridge
- * builds/rebuild attempts — when the observed loader generation changes
- * or an incomplete session forces a rescan of appended DEX.
+ * Session-local DexKitBridge lifecycle. The containing
+ * {@link ResolutionSessionContext} fixes the runtime ClassLoader and is the
+ * sole owner/closer. The internal revision/budget remains defensive, but a
+ * normal resolver transaction creates exactly one bridge and never shares it
+ * with another generation.
  */
 final class DexKitSession {
+    interface NativeLibraryLoader {
+        void ensureLoaded(Context appContext);
+    }
+
+    interface BridgeOpener {
+        DexKitBridge create(ClassLoader loader);
+    }
+
     private final ModuleLog log;
     private final BootstrapTrace trace;
     private final ClassLoader loader;
+    private final Context appContext;
+    private final NativeLibraryLoader nativeLibraryLoader;
+    private final BridgeOpener bridgeOpener;
     private final Object lock = new Object();
     private final AtomicInteger generation = new AtomicInteger();
 
@@ -25,10 +37,22 @@ final class DexKitSession {
     private int rebuildCount;
     private long loaderIdentity = -1L;
 
-    DexKitSession(ModuleLog log, BootstrapTrace trace, ClassLoader loader) {
+    DexKitSession(ModuleLog log, BootstrapTrace trace, ClassLoader loader,
+                  Context appContext) {
+        this(log, trace, loader, appContext,
+                DexKitNativeLoader::ensureLoaded,
+                candidateLoader -> DexKitBridge.create(candidateLoader, true));
+    }
+
+    DexKitSession(ModuleLog log, BootstrapTrace trace, ClassLoader loader,
+                  Context appContext, NativeLibraryLoader nativeLibraryLoader,
+                  BridgeOpener bridgeOpener) {
         this.log = log;
         this.trace = trace;
         this.loader = loader;
+        this.appContext = appContext;
+        this.nativeLibraryLoader = nativeLibraryLoader;
+        this.bridgeOpener = bridgeOpener;
     }
 
     int getGeneration() {
@@ -71,11 +95,23 @@ final class DexKitSession {
             loaderIdentity = loaderId;
             long start = SystemClock.elapsedRealtime();
             try {
-                DexKitNativeLoader.ensureLoaded(appContext());
+                if (appContext == null) {
+                    trace("bridgeCreateEnd", "trigger=" + trigger
+                            + " failed=applicationContextUnavailable");
+                    log.info("resolver dexkit bridge creation skipped trigger=" + trigger
+                            + " reason=applicationContextUnavailable");
+                    return null;
+                }
+                nativeLibraryLoader.ensureLoaded(appContext);
                 trace("bridgeCreateStart", "trigger=" + trigger
                         + " generation=" + bridgeGeneration
                         + " loaderIdentity=" + loaderIdentity);
-                bridge = DexKitBridge.create(loader, true);
+                bridge = bridgeOpener.create(loader);
+                if (bridge == null) {
+                    trace("bridgeCreateEnd", "trigger=" + trigger
+                            + " failed=bridgeOpenerReturnedNull");
+                    return null;
+                }
                 long end = SystemClock.elapsedRealtime();
                 trace("bridgeCreateEnd", "trigger=" + trigger
                         + " elapsedMs=" + (end - start)
@@ -136,7 +172,4 @@ final class DexKitSession {
         }
     }
 
-    private android.content.Context appContext() {
-        return HookCoordinator.currentApplication();
-    }
 }

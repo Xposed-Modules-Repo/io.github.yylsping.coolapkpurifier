@@ -2,6 +2,8 @@ package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
 import android.app.Instrumentation;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Color;
@@ -13,8 +15,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.animation.AnimationUtils;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -24,10 +29,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.lang.reflect.Method;
-import java.util.Collections;
-import java.util.Map;
-import java.util.WeakHashMap;
-
 import io.github.libxposed.api.XposedInterface.ExceptionMode;
 import io.github.libxposed.api.XposedInterface.HookHandle;
 import io.github.libxposed.api.XposedModule;
@@ -43,10 +44,12 @@ final class SettingsHooks {
     private final PurifierConfig config;
     private final int coolapkMajor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Map<Activity, PageState> injected =
-            Collections.synchronizedMap(new WeakHashMap<>());
+    private final PageStateRegistry<Activity, PageState> injected = new PageStateRegistry<>();
     private HookHandle resumeHandle;
     private HookHandle destroyHandle;
+    private HookHandle finishHandle;
+    private HookHandle backHandle;
+    private HookHandle touchHandle;
 
     SettingsHooks(XposedModule module, ModuleLog log, PurifierConfig config,
                   int coolapkMajor) {
@@ -83,11 +86,48 @@ final class SettingsHooks {
                     .intercept(chain -> {
                         Object candidate = chain.getArg(0);
                         if (candidate instanceof Activity) {
-                            notifyConfigExit((Activity) candidate);
+                            onActivityDestroyed((Activity) candidate);
                         }
                         return chain.proceed();
                     });
-            log.info("settings resume/destroy hooks installed");
+            Method finish = Activity.class.getDeclaredMethod("finish");
+            finishHandle = module.hook(finish)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("coolapk-purifier-settings-finish")
+                    .intercept(chain -> {
+                        Object candidate = chain.getThisObject();
+                        if (candidate instanceof Activity
+                                && handleConfigBack((Activity) candidate)) {
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+            Method onBackPressed = Activity.class.getDeclaredMethod("onBackPressed");
+            backHandle = module.hook(onBackPressed)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("coolapk-purifier-settings-back")
+                    .intercept(chain -> {
+                        Object candidate = chain.getThisObject();
+                        if (candidate instanceof Activity
+                                && handleConfigBack((Activity) candidate)) {
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+            Method dispatchTouchEvent = Activity.class.getDeclaredMethod(
+                    "dispatchTouchEvent", MotionEvent.class);
+            touchHandle = module.hook(dispatchTouchEvent)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("coolapk-purifier-settings-scroll")
+                    .intercept(chain -> {
+                        Object candidate = chain.getThisObject();
+                        Object event = chain.getArg(0);
+                        if (candidate instanceof Activity && event instanceof MotionEvent) {
+                            handleSettingsTouch((Activity) candidate, (MotionEvent) event);
+                        }
+                        return chain.proceed();
+                    });
+            log.info("settings resume/destroy/back hooks installed");
         } catch (Throwable throwable) {
             log.error("settings resume hook install failed", throwable);
         }
@@ -95,9 +135,9 @@ final class SettingsHooks {
 
     private void maybeInject(Activity activity) {
         try {
-            if (activity == null || activity.isFinishing()
+            if (activity == null || activity.isFinishing() || activity.isDestroyed()
                     || !SIMPLE_ACTIVITY.equals(activity.getClass().getName())
-                    || injected.containsKey(activity)) {
+                    || injected.contains(activity)) {
                 return;
             }
             View decor = activity.getWindow().getDecorView();
@@ -135,13 +175,15 @@ final class SettingsHooks {
             entryParams.rightMargin = dp(activity, 14);
             entryParams.topMargin = originalTop + dp(activity, 14);
             frame.addView(entry, entryParams);
-            PageState state = new PageState(frame, compose, entry, toolbarTitle, originalTop);
+            PageState state = new PageState(frame, compose, entry, toolbarTitle, originalTop,
+                    shift);
             entry.setOnClickListener(view -> showConfigPage(activity, state));
+            state.touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
             injected.put(activity, state);
             log.info("settings entry injected top=" + entryParams.topMargin
                     + " composeShift=" + shift + " coolapkMajor=" + coolapkMajor);
         } catch (Throwable throwable) {
-            log.error("settings entry injection failed", throwable);
+            log.error("settings injection skipped; core purifier unaffected", throwable);
         }
     }
 
@@ -158,12 +200,8 @@ final class SettingsHooks {
         GradientDrawable card = new GradientDrawable();
         card.setColor(cardColor);
         card.setCornerRadius(dp(activity, 12));
-        if (android.os.Build.VERSION.SDK_INT >= 21) {
-            row.setBackground(new RippleDrawable(
-                    ColorStateList.valueOf(0x18000000), card, null));
-        } else {
-            row.setBackground(card);
-        }
+        row.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(0x18000000), card, null));
 
         ImageView icon = new ImageView(activity);
         Drawable iconDrawable = activity.getDrawable(android.R.drawable.ic_menu_manage);
@@ -194,7 +232,7 @@ final class SettingsHooks {
     }
 
     private void showConfigPage(Activity activity, PageState state) {
-        if (state.inConfig) {
+        if (state.inConfig || state.transitioning) {
             return;
         }
         ScrollView scroll = new ScrollView(activity);
@@ -215,25 +253,136 @@ final class SettingsHooks {
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         params.topMargin = state.originalComposeTop;
-        state.compose.setVisibility(View.GONE);
-        state.entry.setVisibility(View.GONE);
+        scroll.setElevation(dp(activity, 8));
         state.frame.addView(scroll, params);
         state.configPage = scroll;
+        state.exitNotified = false;
         state.toolbarTitle.setText("酷安净化");
         state.inConfig = true;
+        state.transitioning = true;
+        int width = Math.max(state.frame.getWidth(),
+                activity.getResources().getDisplayMetrics().widthPixels);
+        scroll.setTranslationX(width);
+        scroll.animate()
+                .translationX(0f)
+                .setDuration(280L)
+                .setInterpolator(AnimationUtils.loadInterpolator(activity,
+                        android.R.interpolator.fast_out_slow_in))
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        if (state.configPage == scroll && state.inConfig) {
+                            state.compose.setVisibility(View.INVISIBLE);
+                            state.entry.setVisibility(View.INVISIBLE);
+                        }
+                        state.transitioning = false;
+                    }
+                })
+                .start();
         log.info("settings config page shown inline=true coolapkActivity="
                 + activity.getClass().getName());
     }
 
-    private void notifyConfigExit(Activity activity) {
+    private boolean handleConfigBack(Activity activity) {
         PageState state = injected.get(activity);
-        if (state == null || !state.inConfig || state.exitNotified) {
+        if (state == null || !state.inConfig) {
+            return false;
+        }
+        hideConfigPage(activity, state);
+        return true;
+    }
+
+    private void hideConfigPage(Activity activity, PageState state) {
+        View configPage = state.configPage;
+        if (!state.inConfig || configPage == null) {
+            return;
+        }
+        configPage.animate().cancel();
+        state.inConfig = false;
+        state.transitioning = true;
+        state.toolbarTitle.setText("设置");
+        state.compose.setVisibility(View.VISIBLE);
+        state.entry.setVisibility(View.VISIBLE);
+        notifyConfigExit(activity, state);
+        int width = Math.max(state.frame.getWidth(),
+                activity.getResources().getDisplayMetrics().widthPixels);
+        configPage.animate()
+                .translationX(width)
+                .setDuration(240L)
+                .setInterpolator(AnimationUtils.loadInterpolator(activity,
+                        android.R.interpolator.fast_out_slow_in))
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        if (configPage.getParent() == state.frame) {
+                            state.frame.removeView(configPage);
+                        }
+                        if (state.configPage == configPage) {
+                            state.configPage = null;
+                        }
+                        state.transitioning = false;
+                    }
+                })
+                .start();
+        log.info("settings config page hidden return=settings");
+    }
+
+    private void notifyConfigExit(Activity activity, PageState state) {
+        if (state == null || state.exitNotified) {
             return;
         }
         state.exitNotified = true;
-        mainHandler.post(() -> Toast.makeText(activity.getApplicationContext(),
+        Context application = activity.getApplicationContext();
+        mainHandler.post(() -> Toast.makeText(application,
                 EXIT_MESSAGE, Toast.LENGTH_LONG).show());
         log.info("settings config page exited toastRequested=true");
+    }
+
+    private void onActivityDestroyed(Activity activity) {
+        PageState state = injected.remove(activity);
+        if (state == null) {
+            return;
+        }
+        if (state.inConfig) {
+            notifyConfigExit(activity, state);
+        }
+        state.dispose();
+        log.info("settings page state removed on destroy remaining=" + injected.size());
+    }
+
+    private void setEntryCollapsed(PageState state, boolean collapsed) {
+        if (state.entryCollapsed == collapsed) {
+            return;
+        }
+        state.entryCollapsed = collapsed;
+        FrameLayout.LayoutParams current =
+                (FrameLayout.LayoutParams) state.compose.getLayoutParams();
+        int expectedTop = state.originalComposeTop + (collapsed ? 0 : state.entryShift);
+        if (current.topMargin != expectedTop) {
+            FrameLayout.LayoutParams updated = new FrameLayout.LayoutParams(current);
+            updated.topMargin = expectedTop;
+            state.compose.setLayoutParams(updated);
+        }
+        state.entry.animate().cancel();
+        state.entry.animate()
+                .translationY(collapsed ? -state.entryShift : 0f)
+                .alpha(collapsed ? 0f : 1f)
+                .setDuration(180L)
+                .start();
+        log.info("settings entry scroll state collapsed=" + collapsed);
+    }
+
+    private void handleSettingsTouch(Activity activity, MotionEvent event) {
+        PageState state = injected.get(activity);
+        if (state == null || state.inConfig || state.transitioning || state.entryCollapsed) {
+            return;
+        }
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            state.touchDownY = event.getY();
+        } else if (event.getActionMasked() == MotionEvent.ACTION_MOVE
+                && event.getY() < state.touchDownY - state.touchSlop) {
+            setEntryCollapsed(state, true);
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -349,17 +498,35 @@ final class SettingsHooks {
         final View entry;
         final TextView toolbarTitle;
         final int originalComposeTop;
+        final int entryShift;
         View configPage;
         boolean inConfig;
         boolean exitNotified;
+        boolean transitioning;
+        boolean entryCollapsed;
+        float touchDownY;
+        int touchSlop;
 
         PageState(FrameLayout frame, View compose, View entry, TextView toolbarTitle,
-                  int originalComposeTop) {
+                  int originalComposeTop, int entryShift) {
             this.frame = frame;
             this.compose = compose;
             this.entry = entry;
             this.toolbarTitle = toolbarTitle;
             this.originalComposeTop = originalComposeTop;
+            this.entryShift = entryShift;
+        }
+
+        void dispose() {
+            entry.animate().cancel();
+            entry.setOnClickListener(null);
+            if (configPage != null) {
+                configPage.animate().cancel();
+                if (configPage.getParent() == frame) {
+                    frame.removeView(configPage);
+                }
+                configPage = null;
+            }
         }
     }
 }

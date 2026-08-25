@@ -28,11 +28,6 @@ final class Issue2Resolver {
             "com.coolapk.market.view.feedv8.component.TopicRecommendConfig";
     private static final String RELATED_HOLDER_CLASS =
             "com.coolapk.market.viewholder.RelatedDataViewHolder";
-    private static final String RECOMMEND_FEED_CLASS =
-            "com.coolapk.market.view.feed.post.RecommendFeed";
-    private static final String DETAIL_SPONSOR_HOLDER_CLASS =
-            "com.coolapk.market.view.ad.SponsorSelfDrawDetailViewHolder";
-
     private final DexKitBridge bridge;
     private final ClassLoader loader;
     private final ModuleLog log;
@@ -52,8 +47,7 @@ final class Issue2Resolver {
             return targets;
         }
         if (config.isEnabled(PurifierConfig.Feature.AUTO_COMMENT)) {
-            put(targets, resolveNamedMethod(TargetResolver.KEY_AUTO_COMMENT,
-                    AUTO_COMMENT_CLASS, "addAutoShowFeedCommentView"));
+            put(targets, resolveAutoCommentEntry());
         }
         if (config.isEnabled(PurifierConfig.Feature.TOPIC_DEVICE_RECOMMEND)) {
             put(targets, resolveTopicRecommendToggle());
@@ -63,12 +57,10 @@ final class Issue2Resolver {
                     RELATED_HOLDER_CLASS));
         }
         if (config.isEnabled(PurifierConfig.Feature.SAME_TOPIC_FEED)) {
-            put(targets, resolveClassTarget(TargetResolver.KEY_SAME_TOPIC_FEED,
-                    RECOMMEND_FEED_CLASS));
+            put(targets, resolveSameTopicTemplatePredicate());
         }
         if (config.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR)) {
-            put(targets, resolveClassTarget(TargetResolver.KEY_DETAIL_SPONSOR,
-                    DETAIL_SPONSOR_HOLDER_CLASS));
+            put(targets, resolveDetailSponsorGetter());
         }
         return targets;
     }
@@ -94,7 +86,9 @@ final class Issue2Resolver {
                                 "everything is fine, show splash",
                                 "in no ad meantime")));
                 for (MethodData candidate : methods) {
-                    if (isLiveBoolean(candidate)) {
+                    Method reflected = liveMethod(candidate);
+                    if (reflected != null
+                            && TargetVerifier.isSplashDecision(reflected)) {
                         verified.add(candidate);
                     }
                 }
@@ -112,55 +106,83 @@ final class Issue2Resolver {
                 "issue2_splash_strings", verified.get(0));
     }
 
-    private ResolvedTarget resolveNamedMethod(String key, String className,
-                                               String methodName) {
+    private ResolvedTarget resolveAutoCommentEntry() {
+        List<MethodData> live = new ArrayList<>();
         try {
             ClassDataList classes = bridge.findClass(FindClass.create()
-                    .searchPackages(packageName(className))
-                    .matcher(ClassMatcher.create().className(className)));
+                    .searchPackages(packageName(AUTO_COMMENT_CLASS))
+                    .matcher(ClassMatcher.create()
+                            .source("RecyclerViewItemFullVisibleController.kt",
+                                    StringMatchType.Equals, false)
+                            .className(AUTO_COMMENT_CLASS)));
             if (classes.size() == 1) {
                 MethodDataList methods = bridge.findMethod(FindMethod.create()
                         .searchInClass(java.util.Collections.singleton(classes.get(0)))
-                        .matcher(MethodMatcher.create().name(
-                                methodName, StringMatchType.Equals, false)));
-                List<MethodData> live = new ArrayList<>();
+                        .matcher(MethodMatcher.create()
+                                .returnType("void")
+                                .paramCount(1)));
                 for (MethodData method : methods) {
-                    if (liveMethod(method) != null) {
+                    Method reflected = liveMethod(method);
+                    if (reflected != null
+                            && TargetVerifier.isAutoCommentEntry(reflected)) {
                         live.add(method);
                     }
                 }
-                log.info("resolver target=" + key + " candidates=" + live.size()
-                        + " descriptors=" + describeMethods(live));
-                if (live.size() == 1) {
-                    return methodTarget(key, "issue2_semantic_name", live.get(0));
-                }
             }
         } catch (Throwable throwable) {
-            log.info("resolver target=" + key + " namedQueryFailed=" + throwable);
+            log.info("resolver target=autoComment sourceQueryFailed=" + throwable);
+        }
+        log.info("resolver target=autoComment entryCandidates=" + live.size()
+                + " descriptors=" + describeMethods(live));
+        MethodData unique = UniqueTargetSelector.only(live);
+        if (unique != null) {
+            return methodTarget(TargetResolver.KEY_AUTO_COMMENT,
+                    "issue2_kotlin_source_shape", unique);
         }
         try {
-            Class<?> type = Class.forName(className, false, loader);
+            Class<?> type = Class.forName(AUTO_COMMENT_CLASS, false, loader);
             Method matched = null;
             for (Method method : type.getDeclaredMethods()) {
-                if (methodName.equals(method.getName())
-                        && !Modifier.isAbstract(method.getModifiers())) {
+                if (TargetVerifier.isAutoCommentEntry(method)) {
                     if (matched != null) {
-                        log.info("resolver target=" + key
-                                + " reflectionAmbiguous class=" + className);
+                        log.info("resolver target=autoComment reflectionAmbiguous class="
+                                + AUTO_COMMENT_CLASS);
                         return null;
                     }
                     matched = method;
                 }
             }
-            return reflectedMethodTarget(key, matched, "issue2_reflection_name");
+            return reflectedMethodTarget(TargetResolver.KEY_AUTO_COMMENT,
+                    matched, "issue2_reflection_shape");
         } catch (Throwable throwable) {
-            log.info("resolver target=" + key + " reflectionUnavailable=" + throwable);
+            log.info("resolver target=autoComment reflectionUnavailable=" + throwable);
             return null;
         }
     }
 
     private ResolvedTarget resolveTopicRecommendToggle() {
         List<MethodData> live = new ArrayList<>();
+        try {
+            MethodData targetRowGetter = bridge.getMethodData(
+                    "Lcom/coolapk/market/model/Feed;->getTargetRow()"
+                            + "Lcom/coolapk/market/model/FeedTarget;");
+            if (targetRowGetter != null) {
+                for (MethodData caller : targetRowGetter.getCallers()) {
+                    if (isTopicTargetRowAssembler(caller)) {
+                        live.add(caller);
+                    }
+                }
+            }
+            log.info("resolver target=topicRecommend targetRowAssemblers=" + live.size()
+                    + " descriptors=" + describeMethods(live));
+            if (live.size() == 1) {
+                return methodTarget(TargetResolver.KEY_TOPIC_RECOMMEND,
+                        "issue2_target_row_assembler", live.get(0));
+            }
+        } catch (Throwable throwable) {
+            log.info("resolver target=topicRecommend targetRowQueryFailed=" + throwable);
+        }
+        live.clear();
         try {
             ClassDataList classes = bridge.findClass(FindClass.create()
                     .searchPackages("com.coolapk.market.view.feedv8.component")
@@ -209,6 +231,94 @@ final class Issue2Resolver {
             log.info("resolver target=topicRecommend reflectionUnavailable=" + throwable);
             return null;
         }
+    }
+
+    private ResolvedTarget resolveDetailSponsorGetter() {
+        List<MethodData> live = new ArrayList<>();
+        try {
+            MethodDataList methods = bridge.findMethod(FindMethod.create()
+                    .searchPackages("com.coolapk.market.model")
+                    .matcher(MethodMatcher.create()
+                            .name("getDetailSponsorCard", StringMatchType.Equals, false)
+                            .returnType("com.coolapk.market.model.Entity")
+                            .paramCount(0)));
+            for (MethodData method : methods) {
+                Method reflected = liveMethod(method);
+                if (reflected != null && !Modifier.isAbstract(reflected.getModifiers())
+                        && inheritsFrom(reflected.getDeclaringClass(),
+                        "com.coolapk.market.model.Feed")) {
+                    live.add(method);
+                }
+            }
+        } catch (Throwable throwable) {
+            log.info("resolver target=detailSponsor getterQueryFailed=" + throwable);
+        }
+        log.info("resolver target=detailSponsor getterCandidates=" + live.size()
+                + " descriptors=" + describeMethods(live));
+        return live.size() == 1 ? methodTarget(TargetResolver.KEY_DETAIL_SPONSOR,
+                "issue2_detail_model_getter", live.get(0)) : null;
+    }
+
+    private ResolvedTarget resolveSameTopicTemplatePredicate() {
+        List<MethodData> live = new ArrayList<>();
+        try {
+            MethodDataList methods = bridge.findMethod(FindMethod.create()
+                    .matcher(MethodMatcher.create()
+                            // Server entity-template metadata, not display text.
+                            .usingStrings("feedRecommendListCard")
+                            .returnType("boolean")
+                            .paramCount(1)));
+            for (MethodData method : methods) {
+                Method reflected = liveMethod(method);
+                if (reflected != null && isSameTopicTemplatePredicate(reflected)) {
+                    live.add(method);
+                }
+            }
+        } catch (Throwable throwable) {
+            log.info("resolver target=sameTopicFeed templateQueryFailed=" + throwable);
+        }
+        log.info("resolver target=sameTopicFeed templatePredicates=" + live.size()
+                + " descriptors=" + describeMethods(live));
+        MethodData unique = UniqueTargetSelector.only(live);
+        return unique == null ? null : methodTarget(TargetResolver.KEY_SAME_TOPIC_FEED,
+                "issue2_entity_template_predicate", unique);
+    }
+
+    private boolean isSameTopicTemplatePredicate(Method method) {
+        Class<?>[] params = method.getParameterTypes();
+        return Modifier.isStatic(method.getModifiers())
+                && !Modifier.isAbstract(method.getModifiers())
+                && method.getReturnType() == boolean.class
+                && params.length == 1
+                && params[0] == Object.class
+                && inheritsFrom(method.getDeclaringClass(),
+                "com.coolapk.market.view.cardlist.EntityListFragment");
+    }
+
+    private boolean isTopicTargetRowAssembler(MethodData method) {
+        Method reflected = liveMethod(method);
+        if (reflected == null || !Modifier.isStatic(reflected.getModifiers())
+                || Modifier.isAbstract(reflected.getModifiers())
+                || !"kotlin.Unit".equals(reflected.getReturnType().getName())) {
+            return false;
+        }
+        Class<?>[] params = reflected.getParameterTypes();
+        return params.length == 4
+                && "com.coolapk.market.model.Feed".equals(params[0].getName())
+                && params[1] == reflected.getDeclaringClass()
+                && "androidx.compose.runtime.Composer".equals(params[2].getName())
+                && params[3] == int.class;
+    }
+
+    private static boolean inheritsFrom(Class<?> type, String parentName) {
+        Class<?> cursor = type;
+        while (cursor != null) {
+            if (parentName.equals(cursor.getName())) {
+                return true;
+            }
+            cursor = cursor.getSuperclass();
+        }
+        return false;
     }
 
     private ResolvedTarget resolveClassTarget(String key, String className) {

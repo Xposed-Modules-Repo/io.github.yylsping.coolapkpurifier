@@ -5,15 +5,21 @@ import java.util.List;
 
 final class EntityListFilter {
     private final EntityClassifier classifier;
+    private final EntityClassifier.Context context;
 
     EntityListFilter(EntityClassifier classifier) {
+        this(classifier, EntityClassifier.Context.FEED);
+    }
+
+    EntityListFilter(EntityClassifier classifier, EntityClassifier.Context context) {
         this.classifier = classifier;
+        this.context = context;
     }
 
     List<?> filter(List<?> source) {
         int firstAd = -1;
         for (int index = 0; index < source.size(); index++) {
-            if (classifier.isSponsored(source.get(index))) {
+            if (classifier.shouldRemove(source.get(index), context)) {
                 firstAd = index;
                 break;
             }
@@ -28,7 +34,7 @@ final class EntityListFilter {
         }
         for (int index = firstAd + 1; index < source.size(); index++) {
             Object item = source.get(index);
-            if (!classifier.isSponsored(item)) {
+            if (!classifier.shouldRemove(item, context)) {
                 clean.add(item);
             }
         }

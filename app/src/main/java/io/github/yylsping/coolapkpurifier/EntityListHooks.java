@@ -31,17 +31,47 @@ final class EntityListHooks {
     private final Map<Method, HookHandle> handles = new HashMap<>();
     private final Map<View, ReplyViewState> collapsedReplyViews = new WeakHashMap<>();
     private volatile boolean accessorsComplete;
+    private volatile ClassLoader activeLoader;
+    private volatile long generation;
 
     EntityListHooks(XposedModule module, ModuleLog log) {
         this.module = module;
         this.log = log;
     }
 
-    void setConfig(PurifierConfig config) {
+    void setConfig(PurifierConfig config, int coolapkMajor) {
         classifier.setConfig(config);
+        classifier.setCoolapkMajor(coolapkMajor);
     }
 
-    void updateAccessors(Map<String, ResolvedTarget> targets, ClassLoader loader) {
+    synchronized void setSameTopicSemanticVerified(long expectedGeneration, boolean verified) {
+        if (expectedGeneration == generation) {
+            classifier.setSameTopicSemanticVerified(verified);
+        }
+    }
+
+    boolean isSameTopicSemanticVerified() {
+        return classifier.isSameTopicSemanticVerified();
+    }
+
+    synchronized void beginGeneration(long nextGeneration, ClassLoader loader) {
+        if (nextGeneration < generation) {
+            log.info("entity-list generation rollback rejected current=" + generation
+                    + " attempted=" + nextGeneration);
+            return;
+        }
+        generation = nextGeneration;
+        activeLoader = loader;
+        accessorsComplete = false;
+        classifier.setSameTopicSemanticVerified(false);
+        classifier.setAccessors(new EntityAccessors(null, null, null, null));
+    }
+
+    synchronized void updateAccessors(Map<String, ResolvedTarget> targets, ClassLoader loader,
+                                      long expectedGeneration) {
+        if (expectedGeneration != generation || loader != activeLoader) {
+            return;
+        }
         EntityAccessors accessors = EntityAccessors.fromTargets(targets, loader);
         classifier.setAccessors(accessors);
         accessorsComplete = accessors.isComplete();
@@ -83,7 +113,7 @@ final class EntityListHooks {
                             List<?> filtered = filter.filter(source);
                             if (filtered != source) {
                                 log.info("removed " + (source.size() - filtered.size())
-                                        + " sponsored item(s) via " + method);
+                                        + " filtered item(s) via " + method);
                             }
                             return filtered;
                         } catch (Throwable throwable) {
@@ -143,7 +173,8 @@ final class EntityListHooks {
                         .intercept(chain -> {
                             Object result = chain.proceed();
                             try {
-                                boolean sponsored = classifier.isSponsored(chain.getArg(0));
+                                boolean sponsored = classifier.shouldRemove(chain.getArg(0),
+                                        EntityClassifier.Context.REPLY);
                                 updateReplyHolder(chain.getThisObject(), sponsored);
                                 if (sponsored) {
                                     log.info("removed reply sponsor via " + method);
@@ -191,7 +222,11 @@ final class EntityListHooks {
     }
 
     synchronized int hookedMethodCount() {
-        return hooked.size();
+        return hooked.sizeForLoader(activeLoader);
+    }
+
+    synchronized long generation() {
+        return generation;
     }
 
     private static final class ReplyViewState {

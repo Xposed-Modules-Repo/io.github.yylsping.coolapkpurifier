@@ -10,6 +10,7 @@ import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
 
 public final class PurifierConfigTest {
     @Rule
@@ -90,5 +91,46 @@ public final class PurifierConfigTest {
                 folder.getRoot(), (temp, destination) -> false, null);
         assertFalse(failing.setEnabled(PurifierConfig.Feature.AUTO_COMMENT, true));
         assertFalse(failing.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
+    }
+
+    @Test
+    public void disablingAnOptionAlsoMarksSelectionPending() throws Exception {
+        PurifierConfig config = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertTrue(config.markAdapted());
+
+        assertTrue(config.setEnabled(PurifierConfig.Feature.REPLY_SPONSOR, false));
+        assertEquals(PurifierConfig.PendingKind.SELECTION, config.pendingKind());
+        PurifierConfig reloaded = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertFalse(reloaded.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
+        assertEquals(PurifierConfig.PendingKind.SELECTION, reloaded.pendingKind());
+    }
+
+    @Test
+    public void multipleChangesSurviveRestart() throws Exception {
+        PurifierConfig config = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertTrue(config.setEnabled(PurifierConfig.Feature.SPLASH, false));
+        assertTrue(config.setEnabled(PurifierConfig.Feature.AUTO_COMMENT, true));
+        assertTrue(config.setEnabled(PurifierConfig.Feature.DETAIL_SPONSOR, true));
+
+        PurifierConfig reloaded = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertFalse(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
+        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
+        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR));
+    }
+
+    @Test
+    public void malformedOrUnsupportedConfigFailsSafeToDefaults() throws Exception {
+        java.io.File file = folder.getRoot().toPath()
+                .resolve(PurifierConfig.FILE_NAME).toFile();
+        Files.write(file.toPath(), "{broken".getBytes(StandardCharsets.UTF_8));
+        PurifierConfig malformed = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertTrue(malformed.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
+        assertFalse(malformed.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR));
+
+        Files.write(file.toPath(), ("{\"schema\":999,\"options\":{}}")
+                .getBytes(StandardCharsets.UTF_8));
+        PurifierConfig unsupported = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertTrue(unsupported.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
+        assertFalse(unsupported.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
     }
 }

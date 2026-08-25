@@ -17,19 +17,26 @@ final class ContentLayoutHooks {
     private final ModuleLog log;
     private final PurifierConfig config;
     private final int coolapkMajor;
+    private final HookInstallPlan plan;
+    private final FeatureInstallState installState;
+    private final Resources resources;
     private HookHandle inflateHandle;
     private HookHandle layoutTagHandle;
 
     ContentLayoutHooks(XposedModule module, ModuleLog log, PurifierConfig config,
-                       int coolapkMajor) {
+                       int coolapkMajor, HookInstallPlan plan,
+                       FeatureInstallState installState, Resources resources) {
         this.module = module;
         this.log = log;
         this.config = config;
         this.coolapkMajor = coolapkMajor;
+        this.plan = plan;
+        this.installState = installState;
+        this.resources = resources;
     }
 
     void install() {
-        if (inflateHandle != null) {
+        if (!plan.installLayoutInflater || inflateHandle != null) {
             return;
         }
         try {
@@ -55,36 +62,86 @@ final class ContentLayoutHooks {
                         filter(resourceId, inflated);
                         return original;
                     });
-            Method setTag = View.class.getDeclaredMethod("setTag", Object.class);
-            layoutTagHandle = module.hook(setTag)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .setId("coolapk-issue2-layout-tag-filter")
-                    .intercept(chain -> {
-                        View view = (View) chain.getThisObject();
-                        Object next = chain.getArg(0);
-                        String tag = next instanceof String
-                                ? (String) next
-                                : (view.getTag() instanceof String
-                                ? (String) view.getTag() : "");
-                        PurifierConfig.Feature taggedFeature = featureForLayoutTag(tag);
-                        Object result = chain.proceed();
-                        if (taggedFeature != null
-                                && coolapkMajor >= 15
-                                && config.isEffectiveEnabled(taggedFeature, coolapkMajor)) {
-                            collapse(view);
-                            log.info("removed issue2 layoutTag=" + tag
-                                    + " feature=" + taggedFeature.key);
-                        }
-                        return result;
-                    });
-            log.info("issue2 layout filter hook installed");
+            if (plan.installViewTag) {
+                Method setTag = View.class.getDeclaredMethod("setTag", Object.class);
+                layoutTagHandle = module.hook(setTag)
+                        .setExceptionMode(ExceptionMode.PROTECTIVE)
+                        .setId("coolapk-issue2-layout-tag-filter")
+                        .intercept(chain -> {
+                            View view = (View) chain.getThisObject();
+                            Object next = chain.getArg(0);
+                            String tag = next instanceof String
+                                    ? (String) next
+                                    : (view.getTag() instanceof String
+                                    ? (String) view.getTag() : "");
+                            PurifierConfig.Feature taggedFeature = featureForLayoutTag(tag);
+                            Object result = chain.proceed();
+                            if (taggedFeature != null && isRemovalAllowed(taggedFeature)) {
+                                collapse(view);
+                                log.info("removed issue2 layoutTag=" + tag
+                                        + " feature=" + taggedFeature.key);
+                            }
+                            return result;
+                        });
+            }
+            log.info("issue2 layout filter hooks installed inflater=true viewTag="
+                    + plan.installViewTag);
+            long generation = installState.generation();
+            if (generation > 0) {
+                verifyFeatureFallbacks(generation);
+            }
         } catch (Throwable throwable) {
             log.error("issue2 layout filter hook install failed", throwable);
         }
     }
 
     boolean isInstalled() {
-        return inflateHandle != null && layoutTagHandle != null;
+        return (!plan.installLayoutInflater || inflateHandle != null)
+                && (!plan.installViewTag || layoutTagHandle != null);
+    }
+
+    void verifyFeatureFallbacks(long expectedGeneration) {
+        if (expectedGeneration <= 0 || inflateHandle == null || resources == null) {
+            return;
+        }
+        int commentView = resourceId("comment_view", "id");
+        int parentV8 = resourceId("item_feed_layout_v8", "layout");
+        int parentV8Lite = resourceId("item_feed_layout_v8_lite", "layout");
+        if (config.isEffectiveEnabled(PurifierConfig.Feature.AUTO_COMMENT, coolapkMajor)
+                && hasAutoCommentFallbackEvidence(
+                inflateHandle != null, commentView, parentV8, parentV8Lite)) {
+            installState.markFallbackEvidence(
+                    expectedGeneration, TargetResolver.KEY_AUTO_COMMENT);
+        }
+        if (config.isEffectiveEnabled(PurifierConfig.Feature.RELATED_DATA, coolapkMajor)
+                && resourceId("item_related_data", "layout") != 0) {
+            installState.markFallbackEvidence(
+                    expectedGeneration, TargetResolver.KEY_RELATED_DATA);
+        }
+        log.info("feature layout fallback evidence generation=" + expectedGeneration
+                + " autoComment=" + installState.hasFallbackEvidence(
+                TargetResolver.KEY_AUTO_COMMENT)
+                + " autoCommentChild=" + (commentView != 0)
+                + " autoCommentParentV8=" + (parentV8 != 0)
+                + " autoCommentParentV8Lite=" + (parentV8Lite != 0)
+                + " relatedData=" + installState.hasFallbackEvidence(
+                TargetResolver.KEY_RELATED_DATA));
+    }
+
+    static boolean hasAutoCommentFallbackEvidence(boolean inflaterInstalled,
+                                                  int commentViewId,
+                                                  int parentV8LayoutId,
+                                                  int parentV8LiteLayoutId) {
+        return inflaterInstalled && commentViewId != 0
+                && (parentV8LayoutId != 0 || parentV8LiteLayoutId != 0);
+    }
+
+    private int resourceId(String name, String type) {
+        try {
+            return resources.getIdentifier(name, type, CoolapkModule.TARGET_PACKAGE);
+        } catch (Throwable ignored) {
+            return 0;
+        }
     }
 
     private void filter(int resourceId, View inflated) {
@@ -93,7 +150,7 @@ final class ContentLayoutHooks {
         }
         String name = resourceEntryName(inflated, resourceId);
         PurifierConfig.Feature feature = featureForLayout(name);
-        if (feature != null && config.isEffectiveEnabled(feature, coolapkMajor)) {
+        if (feature != null && isRemovalAllowed(feature)) {
             collapse(inflated);
             log.info("removed issue2 layout=" + name + " feature=" + feature.key);
         }
@@ -144,6 +201,15 @@ final class ContentLayoutHooks {
                 ? tag.substring("layout/".length(), suffix)
                 : tag.substring("layout/".length());
         return featureForLayout(layout);
+    }
+
+    private boolean isRemovalAllowed(PurifierConfig.Feature feature) {
+        if (coolapkMajor < 15
+                || !config.isEffectiveEnabled(feature, coolapkMajor)) {
+            return false;
+        }
+        return feature != PurifierConfig.Feature.SAME_TOPIC_FEED
+                || installState.hasSemanticEvidence(TargetResolver.KEY_SAME_TOPIC_FEED);
     }
 
     private static String resourceEntryName(View view, int resourceId) {

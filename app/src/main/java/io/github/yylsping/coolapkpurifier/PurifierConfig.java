@@ -132,9 +132,7 @@ final class PurifierConfig {
         long previousRevision = revision;
         enabled.put(feature, value);
         revision++;
-        if (value) {
-            pendingKind = PendingKind.SELECTION;
-        }
+        pendingKind = PendingKind.SELECTION;
         if (persist()) {
             return true;
         }

@@ -8,8 +8,8 @@ package io.github.yylsping.coolapkpurifier;
  * <p>This closes the lost-trigger dead zone: a runtime-dex event (observer
  * already single-shot closed) or an 8s watchdog firing while a session is
  * scanning with a stale bridge snapshot must still produce a next session
- * that consumes {@code lastResolutionIncomplete} and bumps the DexKit
- * generation. Follow-ups are event-driven only — a new follow-up is launched
+ * that opens a fresh session-owned DexKit bridge for the latest generation.
+ * Follow-ups are event-driven only — a new follow-up is launched
  * exclusively when a NEW trigger arrived during the previous session, so
  * there is no busy loop.
  */

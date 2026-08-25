@@ -2,6 +2,9 @@ package io.github.yylsping.coolapkpurifier;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Stable target-code identity independent of the random APK install path.
@@ -11,14 +14,30 @@ final class StableIdentityKey {
     private StableIdentityKey() {
     }
 
-    static String compute(String packageName, long baseApkSize,
-                          long[] splitSizes, String signingHash) {
-        StringBuilder source = new StringBuilder();
-        source.append("pkg=").append(packageName);
-        source.append("|baseSize=").append(baseApkSize);
+    static String compute(String packageName, long versionCode, long baseApkSize,
+                           long[] splitSizes, String signingHash) {
+        List<String> splits = new ArrayList<>();
         if (splitSizes != null) {
             for (long size : splitSizes) {
-                source.append("|split=").append(size);
+                splits.add("size:" + size);
+            }
+        }
+        return compute(packageName, versionCode, "base.apk#" + baseApkSize,
+                splits, signingHash);
+    }
+
+    static String compute(String packageName, long versionCode, String baseIdentity,
+                          List<String> splitIdentities, String signingHash) {
+        StringBuilder source = new StringBuilder();
+        source.append("pkg=").append(packageName);
+        // Cache isolation only. Resolver behavior must remain version-agnostic.
+        source.append("|versionCode=").append(versionCode);
+        source.append("|base=").append(baseIdentity == null ? "" : baseIdentity);
+        if (splitIdentities != null) {
+            List<String> sorted = new ArrayList<>(splitIdentities);
+            Collections.sort(sorted);
+            for (String identity : sorted) {
+                source.append("|split=").append(identity == null ? "" : identity);
             }
         }
         source.append("|cert=").append(signingHash == null ? "" : signingHash);

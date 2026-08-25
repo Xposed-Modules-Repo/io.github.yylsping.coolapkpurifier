@@ -6,7 +6,13 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
+import android.content.Context;
 import android.os.Bundle;
+
+import com.coolapk.market.model.AutoValueFeed;
+import com.coolapk.market.view.feed.FeedBottomHolder;
+import com.coolapk.market.view.cardlist.MainV8ListFragment;
+import com.coolapk.market.view.cardlist.component.RecyclerViewItemFullVisibleControllerKt;
 
 import java.util.List;
 
@@ -83,6 +89,75 @@ public final class TargetVerifierTest {
                 Helper.class.getMethod("notFeed", List.class, boolean.class)));
     }
 
+    @Test
+    public void topicTargetRowAssemblerShapeIsAccepted() throws Exception {
+        assertTrue(TargetVerifier.isTopicRecommendMethod(
+                FeedBottomHolder.class.getMethod("composeTargetRow",
+                        com.coolapk.market.model.Feed.class,
+                        FeedBottomHolder.class,
+                        androidx.compose.runtime.Composer.class,
+                        int.class)));
+        assertEquals(false, TargetVerifier.isTopicRecommendMethod(
+                FeedBottomHolder.class.getMethod("oldRenderer",
+                        Object.class, Object.class, Object.class,
+                        androidx.compose.runtime.Composer.class,
+                        int.class)));
+    }
+
+    @Test
+    public void concreteDetailSponsorGetterShapeIsAccepted() throws Exception {
+        assertTrue(TargetVerifier.isDetailSponsorGetter(
+                AutoValueFeed.class.getMethod("getDetailSponsorCard")));
+        assertEquals(false, TargetVerifier.isDetailSponsorGetter(
+                com.coolapk.market.model.Feed.class.getMethod(
+                        "getDetailSponsorCard")));
+    }
+
+    @Test
+    public void malformedCachedDetailSponsorDescriptorIsRejected() {
+        String entityD = "L" + EntityAccessorsTest.Entity.class.getName()
+                .replace('.', '/') + ";";
+        ResolvedTarget wrongGetter = new ResolvedTarget(
+                TargetResolver.KEY_DETAIL_SPONSOR, "cache", entityD,
+                entityD + "->getEntityTemplate()Ljava/lang/String;");
+
+        assertNotNull(TargetVerifier.verify(
+                wrongGetter, getClass().getClassLoader()));
+    }
+
+    @Test
+    public void sameTopicSemanticPredicateRequiresExactSafeShape() throws Exception {
+        assertTrue(TargetVerifier.isSameTopicTemplatePredicate(
+                MainV8ListFragment.class.getMethod(
+                        "isRecommendCard", Object.class)));
+        assertEquals(false, TargetVerifier.isSameTopicTemplatePredicate(
+                MainV8ListFragment.class.getMethod(
+                        "unsafeBroadPredicate", String.class)));
+    }
+
+    @Test
+    public void obfuscatedAutoCommentEntryUsesSourceShapeNotMethodName() throws Exception {
+        assertTrue(TargetVerifier.isAutoCommentEntry(
+                RecyclerViewItemFullVisibleControllerKt.class.getMethod(
+                        "m4970", com.coolapk.market.view.cardlist.EntityListFragment.class)));
+        assertEquals(false, TargetVerifier.isAutoCommentEntry(
+                RecyclerViewItemFullVisibleControllerKt.class.getMethod(
+                        "unsafeInstance",
+                        com.coolapk.market.view.cardlist.EntityListFragment.class)));
+        assertEquals(false, TargetVerifier.isAutoCommentEntry(
+                RecyclerViewItemFullVisibleControllerKt.class.getMethod(
+                        "addAutoShowFeedCommentView", String.class)));
+    }
+
+    @Test
+    public void splashDecisionRequiresObservedBusinessSignature() throws Exception {
+        assertTrue(TargetVerifier.isSplashDecision(
+                SplashDecisionHelper.class.getMethod(
+                        "shouldShow", Context.class, Object.class, String.class)));
+        assertEquals(false, TargetVerifier.isSplashDecision(
+                SplashDecisionHelper.class.getMethod("unrelatedFlag")));
+    }
+
     public static final class Helper {
         public List<Object> transform(List<Object> source, boolean flag) {
             return source;
@@ -97,6 +172,18 @@ public final class TargetVerifierTest {
         @Override
         protected void onCreate(Bundle savedInstanceState) {
             super.onCreate(savedInstanceState);
+        }
+    }
+
+
+    public static final class SplashDecisionHelper {
+        public static boolean shouldShow(Context context, Object adTypeData,
+                                         String traceId) {
+            return true;
+        }
+
+        public static boolean unrelatedFlag() {
+            return true;
         }
     }
 }

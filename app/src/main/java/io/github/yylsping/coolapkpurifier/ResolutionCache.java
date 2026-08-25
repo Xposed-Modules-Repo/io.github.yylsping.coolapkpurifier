@@ -19,8 +19,8 @@ import java.util.Map;
  *
  * <p>Stores at most {@link CachePolicy#MAX_ENTRIES} successful identities and
  * the complete serialized JSON (including metadata and recovery markers) is
- * never larger than {@link CachePolicy#MAX_TOTAL_BYTES}. versionCode never
- * participates in cache identity or validity.
+ * never larger than {@link CachePolicy#MAX_TOTAL_BYTES}. versionCode is part
+ * of cache isolation only; it never selects resolver or hook behavior.
  *
  * <p>Schema 2 (file v4): introduced with the multi-target coverage semantics.
  * Schema 1 (file v3) was written by 2.1.0/2.1.1 with positional single-feed

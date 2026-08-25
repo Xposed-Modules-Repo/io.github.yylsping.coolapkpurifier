@@ -23,6 +23,7 @@ keystore.properties
 # Local release artifacts and reverse-engineering inputs
 *.apk
 *.aab
+*.jadx
 *-source.zip
 dist/
 reference/decompiled/
@@ -44,9 +45,11 @@ history-apks/
 
 # User-provided final stabilization brief
 /rc5 → Stable 最终收尾提示词.md
+/2.2.0-followup-optimization.md
 
 # Local tool state
 /.dsh/
+/.codex/
 
 # User-provided bootstrap retirement brief
 /Stable 最终微优化：Bootstrap 终态零开销.md
@@ -62,6 +65,9 @@ history-apks/
 
 # User-provided local agent rules
 /AGENTS.md
+
+# User-provided 2.2.0 release preflight brief
+/2.2.0_full_release_preflight.md
 
 # Local packaging archive
 /coolapk--last.zip
