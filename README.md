@@ -4,10 +4,10 @@
 
 ## 功能
 
-- 去除启动/开屏广告和全屏广告。
-- 去除首页信息流广告与赞助卡片。
-- 去除帖子回复区及评论中的赞助内容。
-- 在酷安原生“设置”列表首部注入“酷安净化”入口；入口随原生列表滚动，配置页使用与原生设置一致的横向过渡并在退出时返回设置页。所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。
+- 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。
+- 默认去除启动/开屏广告和全屏广告。
+- 默认去除首页信息流广告与赞助卡片。
+- 默认去除帖子回复区及评论中的赞助内容。
 - 可选去除自动评论提示、话题与机型推荐、帖子相关推荐、同话题动态和帖子内推广；酷安 15.x 以下自动禁用这些新选项。
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
 - 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤与布局回退共享的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。
@@ -68,7 +68,6 @@
 
 测试 APK 输出到 `app/build/outputs/apk/debug/`。面向普通用户的已签名版本请从 GitHub Releases 下载。
 
-本地发布候选使用 `stageReleaseCandidate`：该任务要求 release signing 配置存在，调用 SDK `apksigner` 验证 v2/v3 签名，并要求完整 signer certificate SHA-256 集合与源码内硬 pin 的正式 signer trust root 完全相等，验证通过后才复制到 `dist/` 并生成 checksum；普通 Gradle property 不能改变 trust root，unsigned、wrong signer 或 expected signer 外混入 extra signer 的 APK 都不会进入候选。release notes 同步后再运行 `verifyReleaseNotesPreflight`，其记录的 APK SHA-256 与 signer 集合必须和 staged candidate 一致。
 
 ## 许可证
 
