@@ -315,18 +315,23 @@ native LSPosed/Zygisk/ART/root/风险应用探针
 
 主线已闭合到具体 native getter 和具体 HTTP header 子字段；剩余缺口是中间 Java invoke/put-header 的直接字节码证据，以及服务端响应或客户端哪一分支生成风险行。现有 collector、序列化、JNI 和抓包差分足以说明该通道不是纯 SDK capability，但不能声称某个单独信号必然触发风控。
 
-### 1.16 【2026-08-26 夜间会话】Priority 1/2 闭合：installedApk 精确入选谓词 + field 12 元素结构（E3）
+### 1.16 【2026-08-26 夜间会话】Priority 1/2/3 闭合：installedApk 谓词 + field 12 结构 + aebd→X-App-Device（全 E3）
 
 完整报告见 `issue5_p1p2_predicate_report.md`。核心结论：
 
-- **入选谓词已到 E3**（无 unknown_condition）：`pm list -3` → ingest 门（cfg bit11、节流20、oom_score_adj≤0 或 cfg[712]、缓存 miss）→ enrich 门（宿主自名豁免；其余 APK ≤ cfg[512] MiB）→ 记录 `+281==0` → append（event 8 另需 cfg[624] 或（有标注 && cfg[674]））。
-- **默认模式为严格增量**：构建成功后 `netht_mark_snapshot_reported`(+280) → `netht_promote_reported_to_skip`(+281)，且缓存链表无删除/清空者 → **每个包在进程生命周期内最多进入 field 12 一次**。`eventType==6 && config["gt"]==1 && cfg[788]` 时走 `netht_fresh_pm_collect_snapshot` 全量路径（标志全零、明文路径 key 与缓存 hex key 永不匹配，不污染增量状态）。
-- **field 12 元素帧**：`"$S_BF#A" + "{" + md5hex32(payload) + "}" + payload`；`payload = 包名 + [标注] + ["@@"+label] + ["@@as:"+acts]`。标注为 9 项已解码权限匹配：`@@su and alert and readclop`（SUPERUSER+ALERT_WINDOW+ACCESS_MOCK_LOCATION）、`@@inject`、`@@writesec`、`@@bindacc`（BIND_ACCESSIBILITY_SERVICE）、`@@unknown`、`@@shizuku`、`@@mockloc`，受 cfg bit22 门控。
-- **服务器经 field 12 只拿到包名+权限标注+label+可选 acts**；apkPath/UID/versionCode/签名/组件计数/min-target SDK 都只留在本地记录，不进该字段。
+- **【P1】入选谓词已到 E3**（无 unknown_condition）：`pm list -3` → ingest 门（cfg bit11、节流20、oom_score_adj≤0 或 cfg[712]、缓存 miss）→ enrich 门（宿主自名豁免；其余 APK ≤ cfg[512] MiB）→ 记录 `+281==0` → append（event 8 另需 cfg[624] 或（有标注 && cfg[674]））。
+- **【P1】默认模式为严格增量**：构建成功后 `netht_mark_snapshot_reported`(+280) → `netht_promote_reported_to_skip`(+281)，且缓存链表无删除/清空者 → **每个包在进程生命周期内最多进入 field 12 一次**。`eventType==6 && config["gt"]==1 && cfg[788]` 时走 `netht_fresh_pm_collect_snapshot` 全量路径（标志全零、明文路径 key 与缓存 hex key 永不匹配，不污染增量状态）。
+- **【P2】field 12 元素帧**：`"$S_BF#A" + "{" + md5hex32(payload) + "}" + payload`；`payload = 包名 + [标注] + ["@@"+label] + ["@@as:"+acts]`。标注为 9 项已解码权限匹配：`@@su and alert and readclop`（SUPERUSER+ALERT_WINDOW+ACCESS_MOCK_LOCATION）、`@@inject`、`@@writesec`、`@@bindacc`（BIND_ACCESSIBILITY_SERVICE）、`@@unknown`、`@@shizuku`、`@@mockloc`，受 cfg bit22 门控。
+- **【P2】服务器经 field 12 只拿到包名+权限标注+label+可选 acts**；apkPath/UID/versionCode/签名/组件计数/min-target SDK 都只留在本地记录，不进该字段。
 - 新确认三条并行采集面：共享 UID 异名 type-7 `uid_match` 事件；`/storage/emulated/0/Android/data` 相邻 UID（[self−200, self+200]∩[10200,10500]）目录扫描 → type-2000 `mis` 事件（cfg[823]）；component-8 差集 → `changedPackages`（卸载/变更，事件 {3,10}）。
 - 缓存 key = pm 行路径子串的大写 hex（`netht_str_to_upper_hex`）；MD5/`%02x` 由 `netht_md5_hex_string` 确证。
+- **【P3，同夜完成】`aebd... → x-app-device` 升 E3**（详见报告 §11-14）：
+  - 历史阴性根因：头名实为 **`"X-App-Device"`（大写）**，此前全部小写检索漏检；wrapper 位于运行时解密 DEX（盘上 APK 仅 30 个易盾壳类）。
+  - `NetEaseProtectSDKManager.ׯ → HTProtect.getToken → WatchMan.getToken → DynamicTask → WatchMan.O000000o → factory.O000000o(String)[B → JNIFactory.aebd1811194e82d9`。
+  - blob 在**启动期一次性取数生成 nuid**（"nuid loaded"），nuid 与 Shuzilm DID（`cn.shuzilm.core.Main`，RSA 公钥 init；`MainInit.useDDI/useDDISessionId` 即其开关）组成 `X-App-Device` 复合串首字段 → Base64 → **reverse** → 去换行补位 → `HttpClientFactory$CoolMarketHeaderInterceptor` 写头。抓包"DDI 后末尾固定 64-char"= reverse 后的复合串首字段，结构精确吻合。
+  - 平行通道同闭环：`_v2_post_token` POST 表单（RequestSessionIDUpdater 白名单 init/indexV8/checkLoginInfo + PostToken.* 远程配置）；`ddid` Cookie（Shuzilm getSessionSync）。
 - 模块决策：**KEEP MODE A FROZEN**（M1–M5 均无新直接证据；模块包按普通第三方包处理，无包名专属匹配）。
-- IDB 已写入 23 个 rename + 8 条注释并保存；未 patch 任何字节。
+- IDB 已写入 23 个 rename + 8 条注释并保存；未 patch 任何字节；环境异常（/proc 反篡改升级、processing 目录 root 文件被未知机制删除）已记录在报告 §15。
 
 ### 1.13 再删除两个长期 framework Hook
 
@@ -552,12 +557,12 @@ PRE_BLOCK 和 AFTER_OVERRIDE 已不再是首选正式方案。若需要严格对
 
 ## 7. 后续证据目标
 
-1. `installedApk collector → field 12 serializer → JNIFactory.aebd... → x-app-device attach point`：前两段已于 2026-08-26 夜间会话闭合到 E3（入选谓词 + 元素结构，见 1.16 与 `issue5_p1p2_predicate_report.md`），不再重复追；剩余缺口是 `aebd... → x-app-device final64` 的 Java wrapper（P3，维持 E2）。当前 IDA 文件继续保持 `libNetHTProtect.so.i64`。
+1. `installedApk collector → field 12 serializer → JNIFactory.aebd... → x-app-device attach point`：**全链已于 2026-08-26 夜间会话闭合到 E3**（P1 谓词、P2 元素结构、P3 Java 边，见 1.16 与 `issue5_p1p2_predicate_report.md`），客户端侧管道已无未知边；不再重复追。
 2. 当前最高价值输入是一次**风险阳性**的原始 Feed 响应及同时间 UI XML/截图，用它直接判断 server row、server flag + 通用 builder，或其它展示模型；没有阳性样本时保持"未确定"。
-3. 只有未来恢复出包含 `JNIFactory.aebd...` 调用或 `x-app-device` 组装的运行时 Java/Dex，才补齐 getter → header 的 E3 边；不再重复搜索已经确认不含 wrapper 的 base APK/现有恢复 DEX。
+3. `AuthUtils`（`X-App-Token = AuthUtils.getToken(ctx, X-App-Device 值)`）定义不在已恢复的 4 个 dex 中（native 或未恢复 dex，E2）；如后续需要可在同窗口策略下恢复其所在 dex。
 4. Feed after-filter 的状态差已收窄为"服务端下发但客户端不展示/不曝光"；该机制早于 2.2.0，除非发现安全风控直接消费广告曝光缺失，否则不触发模块补丁。
 5. Mode A 继续冻结；只用多轮、带 account/device/session/TTL 记录的观测调整假设概率，新的模块改动必须由直接证据触发。
-6. （新增）P4 跨版本差分、P5 通用 card 渲染模型、P6 宿主私有目录 collector 仍待做；P1/P2 已完成。
+6. （更新）P1/P2/P3 已完成；剩余 P4 跨版本差分、P5 通用 card 渲染模型、P6 宿主私有目录 collector。
 
 ## 验收记录
 

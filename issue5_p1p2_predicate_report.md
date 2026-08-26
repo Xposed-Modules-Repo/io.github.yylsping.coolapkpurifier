@@ -267,3 +267,82 @@ KEEP MODE A FROZEN
 - IDB 注解：23 个函数 rename + 8 条函数注释已写入并保存（`idb_save` ok）。
 - 未修改任何机器码；未使用 patch/patch_asm；未触发设备端操作。
 - 证据文件：`.tmp_audit/full_2FA14C.c`、`full_snapshot_funcs.c`、`full_cache_funcs.c`、`full_enrich_funcs.c`、`full_enrich2_funcs.c`、`full_flag_funcs.c`、`full_build_wrappers.c`、`full_md5_caller.c`、`offset_scan2.txt`、`disasm_windows.txt`、`callsite.txt`、`prologue_check.txt`、`decode_strings.py`。
+
+---
+
+# 追加：Priority 3 完成 —— `aebd... → X-App-Device` 补到 E3（Milestone C）
+
+分析时间：2026-08-26（同夜续）
+方法：不注入、不 patch；root 一次性 `/proc/<pid>/mem` 流式读取（`adb exec-out`，设备零落盘），仅恢复包含目标特征的 3 个运行时 DEX；自研 dex 解析器（修正字节序 bug 后）完成调用链还原。
+
+## 11. 为什么此前一直搜不到 wrapper（历史阴性结论的根因）
+
+1. **头名是 `"X-App-Device"`（首字母大写）** ——此前所有 dex/内存/APK 检索都用小写 `x-app-device`（大小写敏感 grep），必然漏检。`X-App-Token/X-App-Id/X-Api-Version/X-Dark-Mode` 等全部同理存在。
+2. wrapper 不在盘上 APK：base APK 的 classes.dex 为 101,621,224 字节，但仅含 30 个 `com.netease.nis.wrapper.*` 壳类（易盾加固），真实代码全部运行时解密。
+3. 恢复出的 9.67MB"业务 DEX"不含网络层（okhttp 有、全部酷安 API 头常量无）——网络层在另一个运行时 DEX（`main_useDDI.dex`）里。
+
+## 12. 新 E3 边（Java 侧完整链）
+
+```text
+Coolapk 启动
+→ NetEaseProtectSDKManager.initializeDeviceIDInternal（协程，日志 "nuid loaded"）
+→ NetEaseProtectSDKManager.ׯ(businessId: String)
+→ HTProtect.getToken(businessId, path)                    [main_useDDI.dex MREF 39155]
+→ WatchMan.getInstance().getToken(factory, int, String)    [sdk_netht.dex]
+→ FutureTask + Thread + 超时 → WatchMan$DynamicTask.call()
+→ WatchMan.O000000o(factory, businessId)  [static, 0x1ea50c]
+→ factory.O000000o(String)[B              [0x1ea08c]
+→ JNIFactory.aebd1811194e82d9(String)[B   [native sub_243B18："gt" 模式 + eventType 6 + security blob（含 field 12）]
+→ AntiCheatResult（成功=success；失败回退 HTProtect.ioctl(301, businessId) / "302|..."）
+→ nuid 存入 NetEaseProtectSDKManager.AtomicReference（ހ() 读取）
+```
+
+```text
+X-App-Device 复合串组装（AppConfig = Lɴ; extends wt1）
+→ ɴ.ވ()[String]（头对数组，coolapk 全部 API 头在此构造）：
+    composite = ଵ.֏()                        // 首字段：[MainInit.useDDI 门控]
+                                              //   Shuzilm DID + NetHT nuid，'[-_0]' 剔除
+             + "; ; ; ; " + Build.MANUFACTURER + "; " + BRAND + MODEL + DISPLAY
+             + OaidManager.ހ() + …
+    → getBytes(UTF-8) → Base64.encodeToString → StringBuilder.reverse()
+    → Regex("\r\n|\r|\n|=") → ""（去换行去补位）
+    → ("X-App-Device", value) 对
+→ HttpClientFactory$CoolMarketHeaderInterceptor.intercept：
+    循环 Request.Builder.header(name, value) 逐对写入
+→ HTTP 请求
+```
+
+抓包观测的"DDI 开启后末尾新增固定 64-char 字段"与该结构精确吻合：value 是 **reverse 后**的串，复合串首字段（Shuzilm DID + nuid）reverse 后位于末尾；`/v6/main/init` 自身发出时尚无 nuid → 只有基础 132 字符值。
+
+## 13. 平行通道（本轮一并 E3 闭合）
+
+```text
+A. POST-TOKEN：
+RequestSessionIDUpdater（白名单 /v6/main/init、/v6/main/indexV8、/v6/account/checkLoginInfo；
+                       远程配置 PostToken.businessId + PostToken.List）
+→ ׯ(businessId) → HTProtect.getToken → AntiCheatResult.token
+→ ExtraPostFieldInterceptor.setV2PostToken(businessId, token)
+→ 仅 *.coolapk.com 且 POST：FormBody 追加字段 "_v2_post_token"
+
+B. ddid Cookie：
+RequestSessionIDUpdater.Ԭ / CookieHelper.addExtraVerifyCookiesForLogin
+→ ShuzilmSDKManager.ރ(path)=getSessionSync（MainInit.useDDISessionId 门控，超时包裹）
+→ CookieInterceptor.setCookie("ddid", value, TTL)（含 isCookieExpired 检查）
+
+C. Shuzilm（数之盾）SDK 身份：
+cn.shuzilm.core.Main.init(context, <RSA 公钥>, z)；setConfig("1"/"operation"/"cdlmt")
+DID 首字母 'D' 校验后持久化（SHUZILM_DID）；shuzilm.cn 域名用于诊断。
+MainInit.useDDI / MainInit.useDDISessionId 正是该 SDK 的远程开关。
+```
+
+## 14. 对既有模型的修正
+
+- aebd blob 的消费方式：**启动期一次性取数生成 nuid**（设备身份），nuid 随每个 `X-App-Device` 常驻上行——不是"每次请求现场生成 64 字符 token"。每请求独立的安全 token 是 `_v2_post_token`（POST 表单，另一条 getToken 通道）。
+- `X-App-Token = AuthUtils.getToken(context, deviceValue)`——由 X-App-Device 值本身派生（AuthUtils 定义不在已恢复 4 个 dex 中，推测 native/未恢复 dex，E2）。
+- field 12（installedApk）位于 aebd blob 内；blob→nuid→X-App-Device 的连接已 E3，因此 **"第三方包采集 → 服务器" 的完整客户端侧管道至此全部 E3**（采集→缓存→field 12→aebd blob→nuid→每个 API 请求头）。
+
+## 15. 本轮环境异常（需用户知悉）
+
+1. 对酷安进程 `/proc/<pid>/mem` 的连续读取会触发易盾反篡改升级：先零填充返回，后 `Permission denied`（连 `/proc/<pid>/maps` 一并拒绝）；未对抗、未绕过，改为冷启动后单窗口一次读 + `exec-out` 直流完成。
+2. 曾在 `/data/local/tmp/processing/` 生成的 root 属主 dump 目录与文件在约 1 分钟内被**未知机制删除**（应用 uid 无权删 root 文件）；本轮最终方案设备侧零落盘，规避了该问题。若你知晓是哪个清理组件（MT 管理器/某守护），请告知。
+3. 酷安进程在本轮多次 force-stop + 重启（官方方式），未重启手机、未动 LSPosed。
