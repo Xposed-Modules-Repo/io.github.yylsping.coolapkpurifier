@@ -315,6 +315,17 @@ native LSPosed/Zygisk/ART/root/风险应用探针
 
 主线已闭合到具体 native getter 和具体 HTTP header 子字段；剩余缺口是中间 Java invoke/put-header 的直接字节码证据，以及服务端响应或客户端哪一分支生成风险行。现有 collector、序列化、JNI 和抓包差分足以说明该通道不是纯 SDK capability，但不能声称某个单独信号必然触发风控。
 
+### 1.17 【2026-08-26 第三会话】D1/D4/D5 完成：Remote Config 默认值与当前值 / 私有目录 collector NOT_FOUND / nuid 生命周期 / 本设备应用列表通道实测关闭
+
+完整报告见 `issue5_d1d4d5_report.md`。核心结论：
+
+- **【D1】Native 配置默认值全部恢复**（848B 配置对象构造函数 `sub_252F68`）：cfg[100]=30（构建节流 30 分钟）、cfg[432]=1、cfg[512]=200MB、cfg[624]=0、cfg[665]=1、cfg[674]=1、cfg[712]=1、cfg[784]=10（acts 阈值）、**cfg[788]=0（gt 全量默认关）**、cfg[823]=0、cfg[840]=0；selector 位 bit11/bit22 = cfg[300/344] 默认 2（>1=ON）。运行时覆盖值 UNKNOWN（NetHT 私有配置通道 `netht_config_field_updater`，需受保护内存）。"gt" 实为命令计数器==1 条件而非布尔开关。
+- **【D1】Coolapk 侧当前值**（今日真实 init 响应）：`useDDI=1`、`useDDISessionId=1`、`useDDIEvent=0`、`PostToken.businessId=aca7df55…68e9`、`PostToken.List=[createFeed,reply]`（`_v2_post_token` 仅发帖/回复）。
+- **【D4】filePermisson(field 9) 语义解明**：`netht_extdata_filepermisson_scan`(`sub_27C00C`) 扫 `/storage/emulated\u200b0/Android/data`（外置存储）产出 {包目录名, st_mode}，cfg[840] 默认 OFF。**宿主私有目录 /data/data 枚举 NOT_FOUND**；模块文件（coolapk_purifier_*.json、libdexkit-10.so）无任何采集边（E3 阴性）。
+- **【D5】nuid 生命周期闭合**：冷启动 → Shuzilm init → initializeDeviceIDInternal → getToken(businessId) → aebd blob → nuid → X-App-Device 首字段常驻上行。**缓存子系统零文件 I/O → 每次冷启动首次 build 的 field 12 = 当时可见的全部第三方包（事实全量）**。当前设备实值解码验证：`DU6F…k06; ; ; ; OnePlus; OnePlus; PLQ110; …; null`（99B，'D' 前缀 = Shuzilm DID）。
+- **【本轮最重要修正】本设备应用列表通道实测关闭**：root 见 111 个第三方包（含全部 6 个 yylsping 模块）；酷安 uid(10400) 仅见 1 个（自己）。系统级：QUERY_ALL_PACKAGES=granted 但 ColorOS GET_INSTALLED_APPS=denied + AppOps ignore（USER_FIXED）。三信号一致 → **NetHT pm list collector 在本设备只枚举到宿主自己 → field 12 不含本模块**。风险模型修正：本设备活跃输入面 = LSPosed/Zygisk/ART/root + nuid；"应用列表上传模块包名"降级为"其它 ROM/授权设备才可能"；ROM 权限差异可解释用户反馈分歧。
+- IDB 追加 11 个 rename + 注释并保存；未 patch 字节。
+
 ### 1.16 【2026-08-26 夜间会话】Priority 1/2/3 闭合：installedApk 谓词 + field 12 结构 + aebd→X-App-Device（全 E3）
 
 完整报告见 `issue5_p1p2_predicate_report.md`。核心结论：
