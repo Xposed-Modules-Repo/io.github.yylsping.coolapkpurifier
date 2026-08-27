@@ -2,19 +2,19 @@
 
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
 
-当前本地开发代码包含 Issue #5 的 Mode A-ZF 整改，尚未发布：正常 READY 清理完成后不保留 framework Hook。验收范围、测试包哈希及已知限制见 [整改报告](issue5_mode_a_zf_refactor_report.md)。这项工程验收不代表已证明服务端风控问题消失。
+当前本地候选为 **2.2.1 / versionCode 11，尚未发布**：包含 Issue #5 Mode A-ZF 和发布加固，正常 READY 清理完成后不保留 framework Hook。历史回归目前按 AGENTS.md 暂停在 16.5.1 的 Reply 目标不可达问题，**RELEASE_READY=NO**。实际验收范围、候选哈希及后续项见 [发布加固检查点](issue5_mode_a_zf_release_hardening_report.md)；前阶段记录见 [A-ZF 整改报告](issue5_mode_a_zf_refactor_report.md)。这项工程验收不代表已证明服务端风控问题消失。
 
 ## 功能
 
 - 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。
 - 默认去除启动/开屏广告和全屏广告。
 - 默认去除首页信息流广告与赞助卡片。
-- 默认启用帖子回复区及评论赞助过滤；当前酷安 16.6.1 的专用 Reply Holder 无法通过运行时 loader 加载，该专用 Hook 尚不可用，不应将 READY 视为它已生效。
+- 默认启用帖子回复区及评论赞助过滤；本轮 15.9.0 的 Reply 目标安装、持久缓存和重启读取通过，16.5.1 / 16.6.1 的专用 Reply Holder 无法通过当前运行时 loader 加载，专用 Hook 为 UNAVAILABLE。设置页和日志独立显示本次启动状态，不应将 core READY 视为所有已选功能生效，也不会自动关闭用户开关。
 - 可选去除自动评论提示、话题与机型推荐、帖子相关推荐、同话题动态和帖子内推广；酷安 15.x 以下自动禁用这些新选项。
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
 - 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。Mode A 已移除 `LayoutInflater.inflate` / `View.setTag` 布局回退。
 - 配置变更后于下次启动仅解析尚未缓存的已选目标，并分别提示首次适配与适配完成状态。
-- 开屏净化使用已解析的 Splash Activity 展示边界，不再 Hook `FullScreenAdUtils.shouldShowAd`。Instrumentation 仅用于启动期及 DEGRADED 兜底，正常 READY 后解除。当前 16.6.1 实测专用目标为 `SplashAdActivity.onCreate`，其他未解析的历史 Splash 类不承诺有 READY 后兜底覆盖；旧决策层版本的冷启动结果不能直接代替本次整改验收。
+- 开屏净化使用已解析的 Splash Activity 展示边界，不再 Hook `FullScreenAdUtils.shouldShowAd`。Instrumentation 用于启动期及必要降级兜底；只有 READY、专用能力与 `SplashLifecycleGuard` 注册均满足时才解除，注册失败保留兜底并如实报告非零 framework。非 Xposed lifecycle guard 在 READY 后继续覆盖已解析及精确 legacy 类名，不做宽泛名称匹配。本轮专用目标为 `SplashAdActivity.onCreate`；FullScreen 未自然触发，仅完成策略/逻辑覆盖验证。
 - 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；设置入口使用 Android `ActivityLifecycleCallbacks`，ViewHolder 使用受控语义定位。临时 ClassLoader discovery 按需安装，并在终态退休。
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；build cache 只保存 descriptor 元数据，live target 只在当前 ClassLoader generation 内验证、累积和安装。
@@ -28,7 +28,7 @@
 - 多版本持久缓存（schema 2）：stableTargetIdentity 包含包名、目标 `versionCode`、base APK 文件名与大小、稳定排序后的 split APK 文件名与大小，以及通过 `GET_SIGNING_CERTIFICATES` 读取的当前 signer 证书 DER 摘要；证书不可用会明确记录为 unavailable，不冒充真实摘要；最多保存 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入；多目标条目按方法/类 descriptor 稳定编号，跨会话合并不丢目标。
 - 同版本覆盖重装后 identity 不变，直接命中历史缓存；升级/降级到新版本后自动失效重扫。
 - Bootstrap 终态低开销：READY/DEGRADED 后先逻辑停用 discovery Hook，再关闭 Resolver worker、RuntimeDexObserver、watchdog，并卸载临时 Feature ClassLoader Hook；仍在运行的 session 由所属 worker 安全关闭 bridge。Application.attach 仅在交接条件满足后退休，终态清理补偿被取消的退休任务。正常 READY 解除 Instrumentation；DEGRADED 保留必要兜底。解除失败保留句柄并由 HookLedger 如实报告，不能算作“零 framework Hook”。
-- Reply discovery 优先尝试已有缓存，READY 后仅用有限次数的 `Class.forName` 重试及节流的生命周期回调，不重新安装 framework Hook。16.6.1 当前只命中核心目标缓存，不能将 `featureLazyInstalled=0` 当作 Reply 目标命中缓存的证据。
+- Reply discovery 优先尝试已有缓存，READY 后最多 4 次定时 `Class.forName` 和 3 次 resume 尝试（至少间隔 30s），总预算 120s；任一预算耗尽即注销 observer、取消任务并报告 UNAVAILABLE，不重新安装 framework Hook。两个 16.x 当前只缓存核心目标，不能将 `featureLazyInstalled=0` 当作 Reply 缓存命中的证据。15.9.0 的 class-only Reply 缓存校验已与安装器共享窄范围契约。
 - post-READY loader swap 采用低开销边界：generation-aware adaptation 只覆盖 bootstrap/adaptation window；进入 READY/DEGRADED 后不保留常驻 loader monitor。若宿主在终态后替换核心业务 loader，需要正常重启酷安进程以开启新 adaptation window。
 - 无缓存首次适配时按“默认三项”或“用户新增选项”分别显示一次系统 Toast；适配完成后再提示一次，缓存命中时不重复提示。
 - 不包含联网、更新器、后台服务或周期性轮询。
@@ -40,10 +40,12 @@
 | 项目 | 要求 |
 | --- | --- |
 | 目标应用 | 酷安（包名 `com.coolapk.market`），运行时动态适配，不按版本分支 |
-| 已实机验证 | 13.1.1 / 15.9.0 / 16.1.2 / 16.5.1 / 16.6.1 |
+| 2.2.1 默认功能 smoke 已完成 | 15.9.0；专用 Reply sponsor 阳性移除未自然触发，不声明全场景覆盖 |
+| 2.2.1 本轮部分回归 | 16.5.1 / 16.6.1：核心 READY、零 framework、正常浏览通过；Reply UNAVAILABLE，完整矩阵尚未收尾 |
+| 历史曾验证、本轮未重新验证 | 13.1.1 / 16.1.2；本地没有对应 APK |
 | Android | 9（API 28）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
-| 模块版本 | 2.2.0（versionCode 10） |
+| 本地候选版本 | 2.2.1（versionCode 11），尚未发布、待继续验收 |
 
 模块不按酷安小版本硬编码业务分支。版本适配由 DexKit 动态解析与稳定语义锚点、资源名及受控 framework fallback 组合完成；其中 fallback 只在对应功能启用时安装，并不被视为绝对稳定接口。已实机验证版本代表测试覆盖，不构成对未来或其他版本的绝对兼容保证。若新版本功能失效，请先查看目标应用内：
 
