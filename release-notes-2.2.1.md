@@ -4,29 +4,29 @@
 
 ## 改动
 
-- 正常 READY 清理完成后不保留 framework Hook；非 Xposed 的 Splash lifecycle guard 继续处理已解析及精确历史类名。注册失败时保留必要 Instrumentation 兜底并如实报告，不为零 Hook 指标牺牲覆盖。
-- Reply 独立显示本次启动的安装状态。目标不可达不会把 core READY 误报成全部功能生效，也不会改写用户开关。
-- Reply 重试最多 4 次定时、3 次 resume（至少间隔 30 秒）、总预算 120 秒；任一预算耗尽即注销回调并停止任务。
-- 修复 15.9.0 class-only Reply 目标被缓存校验拒绝的问题；校验与实际安装共用精确类名和 bind 方法形状契约。
-- 修复退出设置后再次进入时入口偶发缺失：每次页面 resume 最多尝试 5 次，安排的延迟累计 1.85 秒；pause/destroy 时取消，成功后停止，不增加 framework Hook。
+- 继承 Mode A-ZF：正常 READY 清理后无 framework Hook；Splash lifecycle guard、必要失败兜底、Reply有限重试、HookLedger与设置入口修复保留。
+- 修复16.x开启相关推荐时因旧 holder 不可达而 DEGRADED：采用唯一且严格验证的 Feed.getRelatedData 业务 getter，保留旧专用 holder 兼容路径。
+- Issue #6 native loader 从 libxposed API102模块信息定位，不依赖酷安 PackageManager 查模块包。按当前进程位数匹配实际打包 ABI；优先加载模块native目录，必要时临时提取。
+- 提取文件绑定 versionCode、ABI、APK SHA-256和CRC；校验大小、内容hash与ELF，损坏或加载失败最多重提取一次，结束后清理本次提取及专属目录内已知旧产物。
+- native 永久失败保留底层cause并提前 DEGRADED，明确 DEXKIT_NATIVE_LOAD_FAILED；不再反复误报成等待Bridge或广告目标失配。
 
-## 兼容性与已知限制
+## 实际验证范围与限制
 
-本轮以同一候选覆盖安装项目内实际存在的 15.9.0、16.5.1、16.6.1；逐轮结果和验收边界见 [发布加固报告](issue5_mode_a_zf_release_hardening_report.md)。13.1.1 / 16.1.2 仅为历史曾验证版本，本轮没有对应 APK，未重新验证。
+[剩余功能报告](issue5_2.2.1_remaining_feature_regression_report.md)覆盖16.6.1五项逐一开启、20次有界自然冷启动，以及16.5.1相关推荐修复对照。五项路径成功安装/验证，但未取得足以确认实际过滤的内容阳性，保留 NOT_TRIGGERED。20次未自然观察到FullScreenAdActivity，不代表路径不存在或已经执行finish。
 
-**默认开启的 Reply 专用赞助过滤在 16.5.1 / 16.6.1 为 UNAVAILABLE，当前不生效。** 设置页会显示“本次启动未找到适配目标，当前未生效”。核心 Splash/Feed 的 READY 不代表该功能可用。没有可靠替代目标，因此没有猜类名或恢复长期 ClassLoader Hook。
+**16.5.1 / 16.6.1 Reply专用赞助过滤仍为UNAVAILABLE，当前不生效。** 15.9.0已知可用来自前阶段基线，本阶段未重新安装；13.1.1不在本轮范围。不能把前阶段三版本矩阵写成最终native候选全部重测。
 
-15.9.0 已验证 Reply 目标安装、缓存重启及正常评论浏览；没有自然捕获专用 holder 的 sponsor 阳性移除，不声明全场景覆盖。FullScreenAdActivity 未自然触发，只有 lifecycle 策略单测和覆盖日志验证。五项可选功能保持用户原有关闭状态，本轮未做开启后的实机功能验收。
+[Issue #6报告](issue6_native_loader_reliability_report.md)覆盖最终候选16.6.1 native miss、相关推荐开启、cache hit、设置与Feed/Splash smoke；独立Android ART测试验证真实so首次提取、旧文件复用、损坏恢复、一次重试及永久失败上限。独立ART不等同酷安UID/SELinux域内fallback全链验收。ABI变化和终态失败另有JVM测试；没有按较早提示切换应用列表权限。
 
-全程保留酷安账号数据和模块配置，没有清数据、卸载酷安、重启手机/LSP 或修改作用域。一次用于取证的 Frida attach 后旧进程退出，原因未确定；探针未执行，该过程不计入正式 smoke，后续正式验收进程没有 Frida。工程验收不代表服务端风控问题已解决。
+原配置、原登录态保留，未清数据或重启手机/LSP；没有Frida/IDA动态附加。工程验收不代表已确定报告者设备的底层失败原因，也不代表风控消失。
 
 ## 构建与候选校验
 
-- Debug / Compatible / Release：各 234 tests，0 failures / errors / skipped。
-- 源码提交：`f6df56f`；此提交之后构建并冻结候选，旧候选不计入最终矩阵。
-- APK：`coolapk-purifier-v2.2.1.apk`，1,138,569 bytes。
-- APK SHA-256: `706C622F50B9825319F20B52D5D27FC9BEBCBE331C5E833442F1B50888A06E94`
+- Debug / Compatible / Release：各258 tests，0 failures / errors / skipped。
+- 源码提交：72cc5f7；Issue #5检查点8a7dab3。
+- APK：coolapk-purifier-v2.2.1.apk，1,152,589 bytes。
+- APK SHA-256: `A175521334EF555CA19B9572A43E8409147CB1AFCB28AB77D563360D513837D2`
 - Signer certificate SHA-256: `12B482270B217A377CF3881382C86EE9F1C3E2B8E4BE25EE5118F327F2858875`
-- APK v2 签名校验通过；交付冻结为本轮实际安装并验证的原始构建产物，不混用仅 VCS 元数据变化的后续重打包件。
+- stageReleaseCandidate校验签名及单一证书集合，安装后base.apk hash一致。后续仅补报告的提交不重打包，交付冻结为本次实机验证的这份APK。
 
-升级模块后只需正常重启作用域应用酷安；不要为了本候选清除酷安数据。发布决定及最终设备状态以验收报告为准。
+升级模块后正常重启作用域应用酷安即可，不需清数据。自主验收完成后等待用户人工验收与发布授权。

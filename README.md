@@ -2,7 +2,7 @@
 
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
 
-当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF 和发布加固，正常 READY 清理完成后不保留 framework Hook。已用同一候选完成 15.9.0 / 16.5.1 / 16.6.1 本轮实机回归；**16.5.1 / 16.6.1 默认开启的 Reply 专用过滤为 UNAVAILABLE，当前不生效**。实际范围、候选哈希及限制见 [发布加固报告](issue5_mode_a_zf_release_hardening_report.md) 和 [2.2.1 发布说明](release-notes-2.2.1.md)；前阶段记录见 [A-ZF 整改报告](issue5_mode_a_zf_refactor_report.md)。这项工程验收不代表已证明服务端风控问题消失。
+当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF、相关推荐 getter 修复和 Issue #6 native loader 加固，正常 READY 清理完成后不保留 framework Hook。前阶段完成三版本基础回归，剩余功能在 16.6.1 逐项开启、相关推荐修复另经 16.5.1 对照；最终 loader 候选的实机回归范围为 16.6.1。**16.5.1 / 16.6.1 默认开启的 Reply 专用过滤仍为 UNAVAILABLE，当前不生效**。详见 [剩余功能回归](issue5_2.2.1_remaining_feature_regression_report.md)、[Issue #6 验收](issue6_native_loader_reliability_report.md) 和 [发布说明](release-notes-2.2.1.md)。工程验收不代表服务端风控问题消失。
 
 ## 功能
 
@@ -24,7 +24,8 @@
 - Resolver 事务隔离：每个 session 在启动时固定捕获 generation + ClassLoader，并独占其 DexKitBridge；loader 中途切换只将旧 session 标记为 superseded，不跨线程关闭 bridge。旧结果不得 apply、写 cache、进入 READY/DEGRADED，bridge 只由所属 worker 退出时关闭。
 - Terminal 事务隔离：deadline、cache hit、full scan 与 error 的 READY/DEGRADED 都在同一个 runtimeEpoch 临界区读取当前 generation readiness、missingRequired 和 loader，并原子提交带 generation/loader 的 terminal snapshot；cleanup、日志、Toast 与 watcher retire 在锁外执行，不存在 read G1 / commit G2。
 - DexKit Context 隔离：resolver session 直接携带 `Application.attach` 已取得的 appContext，native loader/bridge 主路径不再反射 `ActivityThread.currentApplication()`；Context 尚不可用时安全保持可重试。
-- 解析失败可重试：失败会话会重装 ClassLoader 观察器，下一 session 使用新建的 DexKitBridge 重扫，覆盖加固应用在同一 ClassLoader 上分阶段追加 DEX 的时序。
+- DexKit native 从 libxposed API 102 的模块信息定位，不查询酷安 PackageManager 中的模块包。按当前进程位数匹配实际打包 ABI，优先加载框架提供的 native 路径；临时提取校验 APK/ABI/CRC/SHA-256，损坏后最多重提取一次，加载后删除临时 so。
+- Runtime DEX / Bridge 尚未就绪时保持有界重试；native 永久失败则立即分类为 DEXKIT_NATIVE_LOAD_FAILED，通过现有终态事务降级，不再反复等待 20 秒 watchdog。
 - 多版本持久缓存（schema 2）：stableTargetIdentity 包含包名、目标 `versionCode`、base APK 文件名与大小、稳定排序后的 split APK 文件名与大小，以及通过 `GET_SIGNING_CERTIFICATES` 读取的当前 signer 证书 DER 摘要；证书不可用会明确记录为 unavailable，不冒充真实摘要；最多保存 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入；多目标条目按方法/类 descriptor 稳定编号，跨会话合并不丢目标。
 - 同版本覆盖重装后 identity 不变，直接命中历史缓存；升级/降级到新版本后自动失效重扫。
 - Bootstrap 终态低开销：READY/DEGRADED 后先逻辑停用 discovery Hook，再关闭 Resolver worker、RuntimeDexObserver、watchdog，并卸载临时 Feature ClassLoader Hook；仍在运行的 session 由所属 worker 安全关闭 bridge。Application.attach 仅在交接条件满足后退休，终态清理补偿被取消的退休任务。正常 READY 解除 Instrumentation；DEGRADED 保留必要兜底。解除失败保留句柄并由 HookLedger 如实报告，不能算作“零 framework Hook”。
