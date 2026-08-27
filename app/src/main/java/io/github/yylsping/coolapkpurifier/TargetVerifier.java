@@ -144,7 +144,34 @@ final class TargetVerifier {
         if (TargetResolver.KEY_RELATED_DATA.equals(key)) {
             return name.endsWith(".RelatedDataViewHolder");
         }
+        if (TargetResolver.KEY_REPLY_HOLDER.equals(key)) {
+            return isReplyHolderClass(type);
+        }
         return false;
+    }
+
+    /** Class-only Reply cache entries must satisfy the same contract as installation. */
+    static boolean isReplyHolderClass(Class<?> type) {
+        if (type == null || !"com.coolapk.market.viewholder.MultiFeedReplyViewHolder"
+                .equals(type.getName())) {
+            return false;
+        }
+        for (Method method : type.getDeclaredMethods()) {
+            if (isReplyBindMethod(method)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isReplyBindMethod(Method method) {
+        Class<?>[] parameters = method.getParameterTypes();
+        return !Modifier.isStatic(method.getModifiers())
+                && !Modifier.isAbstract(method.getModifiers())
+                && method.getReturnType() == void.class
+                && parameters.length == 1
+                && ("com.coolapk.market.model.Entity".equals(parameters[0].getName())
+                || "com.coolapk.market.model.FeedReply".equals(parameters[0].getName()));
     }
 
     /** Normalizes feed#2 / splash_base#2 style keys to their base key. */

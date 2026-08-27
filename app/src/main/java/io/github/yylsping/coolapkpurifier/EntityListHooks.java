@@ -152,19 +152,12 @@ final class EntityListHooks {
      * dedicated 15/16 holder is stable even when its bind methods are obfuscated.
      */
     synchronized int installReplyHolder(Class<?> holderClass) {
-        if (holderClass == null || !"com.coolapk.market.viewholder.MultiFeedReplyViewHolder"
-                .equals(holderClass.getName())) {
+        if (!TargetVerifier.isReplyHolderClass(holderClass)) {
             return 0;
         }
         int installed = 0;
         for (Method method : holderClass.getDeclaredMethods()) {
-            if (Modifier.isStatic(method.getModifiers()) || method.getParameterCount() != 1
-                    || method.getReturnType() != void.class) {
-                continue;
-            }
-            String argumentType = method.getParameterTypes()[0].getName();
-            if (!"com.coolapk.market.model.Entity".equals(argumentType)
-                    && !"com.coolapk.market.model.FeedReply".equals(argumentType)) {
+            if (!TargetVerifier.isReplyBindMethod(method)) {
                 continue;
             }
             if (handles.containsKey(method)) {

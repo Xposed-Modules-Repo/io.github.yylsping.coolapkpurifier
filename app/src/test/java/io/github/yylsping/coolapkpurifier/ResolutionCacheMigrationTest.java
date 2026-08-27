@@ -2,6 +2,7 @@ package io.github.yylsping.coolapkpurifier;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
@@ -103,6 +104,28 @@ public final class ResolutionCacheMigrationTest {
         cache.saveTargets(other, singleFeedTargets(), false);
         assertFalse(cache.loadResolution(other).coverageSettled);
         assertTrue(cache.loadResolution(identity).coverageSettled);
+    }
+
+    @Test
+    public void verifiedReplyClassSurvivesCacheRoundTripAlongsideCoreTargets() throws Exception {
+        File filesDir = folder.newFolder("reply");
+        TargetIdentity identity = TargetIdentity.fromJson(new JSONObject(IDENTITY_JSON));
+        Map<String, ResolvedTarget> targets = singleFeedTargets();
+        ResolvedTarget reply = new ResolvedTarget(TargetResolver.KEY_REPLY_HOLDER,
+                "lazy_semantic_class", DescriptorUtils.classDescriptorOf(
+                        com.coolapk.market.viewholder.MultiFeedReplyViewHolder.class), "");
+        assertNull(TargetVerifier.verify(reply, getClass().getClassLoader()));
+        targets.put(reply.key, reply);
+        new ResolutionCache(filesDir, TEST_REPLACE).saveTargets(identity, targets, true);
+
+        ResolutionCache.CachedResolution loaded =
+                new ResolutionCache(filesDir, TEST_REPLACE).loadResolution(identity);
+        assertTrue(loaded.coverageSettled);
+        assertEquals(targets.keySet(), loaded.targets.keySet());
+        ResolvedTarget cachedReply = loaded.targets.get(reply.key);
+        assertEquals(reply.classDescriptor, cachedReply.classDescriptor);
+        assertEquals("", cachedReply.methodDescriptor);
+        assertNull(TargetVerifier.verify(cachedReply, getClass().getClassLoader()));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.github.yylsping.coolapkpurifier;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -9,6 +10,9 @@ import android.app.Activity;
 import android.os.Bundle;
 
 import com.coolapk.market.model.AutoValueFeed;
+import com.coolapk.market.model.Entity;
+import com.coolapk.market.model.FeedReply;
+import com.coolapk.market.viewholder.MultiFeedReplyViewHolder;
 import com.coolapk.market.view.feed.FeedBottomHolder;
 import com.coolapk.market.view.cardlist.MainV8ListFragment;
 import com.coolapk.market.view.cardlist.component.RecyclerViewItemFullVisibleControllerKt;
@@ -59,6 +63,62 @@ public final class TargetVerifierTest {
                 "getter.title", "fingerprint_strong", SPLASH_D, "");
 
         assertNotNull(TargetVerifier.verify(target, getClass().getClassLoader()));
+    }
+
+    @Test
+    public void classOnlyReplyTargetVerifiesWithoutRelaxingOtherKeys() {
+        String descriptor = DescriptorUtils.classDescriptorOf(MultiFeedReplyViewHolder.class);
+        assertNull(TargetVerifier.verify(new ResolvedTarget(
+                TargetResolver.KEY_REPLY_HOLDER, "lazy_semantic_class", descriptor, ""),
+                getClass().getClassLoader()));
+        assertNotNull(TargetVerifier.verify(new ResolvedTarget(
+                "getter.title", "cache", descriptor, ""), getClass().getClassLoader()));
+    }
+
+    @Test
+    public void replyCacheRejectsAnUnrelatedClassEvenWithBindShape() {
+        assertNotNull(TargetVerifier.verify(new ResolvedTarget(
+                TargetResolver.KEY_REPLY_HOLDER, "cache",
+                DescriptorUtils.classDescriptorOf(ReplyLookalike.class), ""),
+                getClass().getClassLoader()));
+        assertFalse(TargetVerifier.isReplyHolderClass(null));
+    }
+
+    @Test
+    public void replyBinderAcceptsConcreteEntityAndProtectedFeedReply() throws Exception {
+        assertTrue(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("bind", Entity.class)));
+        assertTrue(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("bindReply", FeedReply.class)));
+    }
+
+    @Test
+    public void replyBinderRejectsStaticAbstractAndReturningMethods() throws Exception {
+        assertFalse(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("staticBind", Entity.class)));
+        assertFalse(TargetVerifier.isReplyBindMethod(AbstractReply.class
+                .getDeclaredMethod("bind", Entity.class)));
+        assertFalse(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("returningBind", Entity.class)));
+    }
+
+    @Test
+    public void replyBinderRejectsBroadOrWrongArityMethods() throws Exception {
+        assertFalse(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("broadBind", Object.class)));
+        assertFalse(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("extraArgument", Entity.class, boolean.class)));
+        assertFalse(TargetVerifier.isReplyBindMethod(MultiFeedReplyViewHolder.class
+                .getDeclaredMethod("noArguments")));
+    }
+
+    public static final class ReplyLookalike {
+        public void bind(Entity entity) {
+        }
+    }
+
+    public abstract static class AbstractReply {
+        public abstract void bind(Entity entity);
     }
 
     @Test
