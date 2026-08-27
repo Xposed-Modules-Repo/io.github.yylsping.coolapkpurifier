@@ -2,300 +2,208 @@ package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
 import android.app.Application;
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
+import android.app.Dialog;
 import android.content.Context;
-import android.content.res.Resources;
 import android.graphics.Color;
-import android.graphics.drawable.Drawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
-import android.content.res.ColorStateList;
+import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
+import android.view.Window;
+import android.view.WindowInsetsController;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
+import io.github.libxposed.api.XposedModule;
+import io.github.libxposed.api.XposedInterface.HookHandle;
+import io.github.libxposed.api.XposedInterface.ExceptionMode;
 
-/** Injects the "酷安净化" entry into Coolapk's Compose settings host. */
+/** Native settings model insertion plus an Activity-owned, dismissible config page. */
 final class SettingsHooks {
     static final String EXIT_MESSAGE = "请重启软件以动态适配更改选项";
-    private static final String SIMPLE_ACTIVITY =
-            "com.coolapk.market.view.base.SimpleActivity";
-
+    private final XposedModule module;
+    private final HookLedger ledger;
     private final ModuleLog log;
     private final PurifierConfig config;
     private final int coolapkMajor;
     private final FeatureRuntimeHealth runtimeHealth;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final PageStateRegistry<Activity, PageState> injected = new PageStateRegistry<>();
+    private final OwnedSettingsPages<Activity, Dialog> pages = new OwnedSettingsPages<>();
+    private final Map<ClassLoader, HookHandle> entryHooks = new HashMap<>();
     private final PageInjectionRetry<Activity> injectionRetry;
     private volatile boolean lifecycleCallbacksInstalled;
+    private int settingsIcon;
 
-    SettingsHooks(ModuleLog log, PurifierConfig config,
-                  int coolapkMajor) {
-        this(log, config, coolapkMajor, new FeatureRuntimeHealth());
-    }
-
-    SettingsHooks(ModuleLog log, PurifierConfig config,
-                  int coolapkMajor, FeatureRuntimeHealth runtimeHealth) {
+    SettingsHooks(XposedModule module, HookLedger ledger, ModuleLog log,
+                  PurifierConfig config, int coolapkMajor, FeatureRuntimeHealth runtimeHealth) {
+        this.module = module;
+        this.ledger = ledger;
         this.log = log;
         this.config = config;
         this.coolapkMajor = coolapkMajor;
         this.runtimeHealth = runtimeHealth;
-        this.injectionRetry = new PageInjectionRetry<>(
+        injectionRetry = new PageInjectionRetry<>(
                 (task, delay) -> mainHandler.postDelayed(task, delay),
-                mainHandler::removeCallbacks, this::maybeInject,
-                activity -> log.info("settings injection retry exhausted activity="
-                        + activity.getClass().getName()));
+                mainHandler::removeCallbacks, this::ensureNativeEntry,
+                activity -> log.info("settings native entry unavailable; no overlay fallback"));
     }
 
     void install(Context context) {
-        if (lifecycleCallbacksInstalled) {
-            return;
-        }
+        if (lifecycleCallbacksInstalled) return;
         try {
-            Context candidate = context;
-            if (!(candidate instanceof Application) && context != null) {
-                candidate = context.getApplicationContext();
-            }
-            if (!(candidate instanceof Application)) {
-                log.info("settings lifecycle callbacks skipped reason=applicationMissing");
-                return;
-            }
-            Application application = (Application) candidate;
-            application.registerActivityLifecycleCallbacks(
+            Context candidate = context instanceof Application ? context
+                    : context == null ? null : context.getApplicationContext();
+            if (!(candidate instanceof Application)) return;
+            settingsIcon = candidate.getResources().getIdentifier(
+                    "ic_setting", "drawable", "com.coolapk.market");
+            ((Application) candidate).registerActivityLifecycleCallbacks(
                     new Application.ActivityLifecycleCallbacks() {
-                        @Override
-                        public void onActivityCreated(Activity activity, Bundle state) {
+                        @Override public void onActivityPreCreated(Activity activity, Bundle state) {
+                            ensureNativeEntry(activity);
                         }
-
-                        @Override
-                        public void onActivityStarted(Activity activity) {
+                        @Override public void onActivityCreated(Activity activity, Bundle state) {
+                            ensureNativeEntry(activity);
                         }
-
-                        @Override
-                        public void onActivityResumed(Activity activity) {
-                            if (activity != null
-                                    && SIMPLE_ACTIVITY.equals(activity.getClass().getName())) {
-                                injectionRetry.start(activity);
-                            }
+                        @Override public void onActivityStarted(Activity activity) { }
+                        @Override public void onActivityResumed(Activity activity) {
+                            if (!ensureNativeEntry(activity)) injectionRetry.start(activity);
                         }
-
-                        @Override
-                        public void onActivityPaused(Activity activity) {
+                        @Override public void onActivityPaused(Activity activity) { injectionRetry.cancel(activity); }
+                        @Override public void onActivityStopped(Activity activity) { }
+                        @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
+                        @Override public void onActivityDestroyed(Activity activity) {
                             injectionRetry.cancel(activity);
-                        }
-
-                        @Override
-                        public void onActivityStopped(Activity activity) {
-                        }
-
-                        @Override
-                        public void onActivitySaveInstanceState(
-                                Activity activity, Bundle state) {
-                        }
-
-                        @Override
-                        public void onActivityDestroyed(Activity activity) {
-                            SettingsHooks.this.onActivityDestroyed(activity);
+                            Dialog page = pages.removeOwner(activity);
+                            if (page != null) page.dismiss();
                         }
                     });
             lifecycleCallbacksInstalled = true;
             log.info("settings lifecycle callbacks registered frameworkHooks=0");
-        } catch (Throwable throwable) {
-            log.error("settings lifecycle callback registration failed", throwable);
+        } catch (Throwable failure) {
+            log.error("settings lifecycle callback registration failed", failure);
         }
     }
 
-    /** Attach-handoff precondition (Mode A-ZF Phase 1). */
-    boolean isLifecycleCallbacksInstalled() {
-        return lifecycleCallbacksInstalled;
-    }
+    boolean isLifecycleCallbacksInstalled() { return lifecycleCallbacksInstalled; }
 
-    /** True stops the retry; false means the host view tree is not ready yet. */
-    private boolean maybeInject(Activity activity) {
+    private synchronized boolean ensureNativeEntry(Activity activity) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return true;
+        ClassLoader loader = activity.getClass().getClassLoader();
+        if (entryHooks.containsKey(loader)) return true;
         try {
-            if (activity == null || activity.isFinishing() || activity.isDestroyed()
-                    || !SIMPLE_ACTIVITY.equals(activity.getClass().getName())
-                    || injected.contains(activity)) {
-                return true;
-            }
-            View decor = activity.getWindow().getDecorView();
-            TextView toolbarTitle = findTextView(decor, "设置");
-            if (toolbarTitle == null) {
-                return false;
-            }
-            Resources resources = activity.getResources();
-            int contentId = resources.getIdentifier(
-                    "content_view", "id", CoolapkModule.TARGET_PACKAGE);
-            View content = contentId == 0 ? null : activity.findViewById(contentId);
-            if (!(content instanceof FrameLayout)) {
-                log.info("settings injection skipped reason=contentViewNotFrame");
-                return false;
-            }
-            FrameLayout frame = (FrameLayout) content;
-            View compose = findByClassName(frame, "androidx.compose.ui.platform.ComposeView");
-            if (compose == null || !(compose.getLayoutParams() instanceof FrameLayout.LayoutParams)) {
-                log.info("settings injection skipped reason=composeViewMissing");
-                return false;
-            }
-
-            FrameLayout.LayoutParams original =
-                    (FrameLayout.LayoutParams) compose.getLayoutParams();
-            int shift = dp(activity, 80);
-            int originalTop = original.topMargin;
-            FrameLayout.LayoutParams moved = new FrameLayout.LayoutParams(original);
-            moved.topMargin = originalTop + shift;
-            compose.setLayoutParams(moved);
-
-            View entry = createEntry(activity);
-            FrameLayout.LayoutParams entryParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 61));
-            entryParams.leftMargin = dp(activity, 14);
-            entryParams.rightMargin = dp(activity, 14);
-            entryParams.topMargin = originalTop + dp(activity, 14);
-            frame.addView(entry, entryParams);
-            PageState state = new PageState(frame, compose, entry, toolbarTitle, originalTop);
-            entry.setOnClickListener(view -> showConfigPage(activity, state));
-            injected.put(activity, state);
-            log.info("settings entry injected top=" + entryParams.topMargin
-                    + " composeShift=" + shift + " coolapkMajor=" + coolapkMajor);
+            Class<?> type = Class.forName(SettingsEntryInjector.FRAGMENT, false, loader);
+            Method method = SettingsEntryInjector.findInitData(type);
+            if (method == null) return false;
+            HookHandle handle = module.hook(method).setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("coolapk-settings-native-entry").intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            boolean inserted = SettingsEntryInjector.inject(chain.getThisObject(), settingsIcon, this::showConfigPage);
+                            log.info("settings native entry inserted=" + inserted + " source=initData listOwned=true");
+                        } catch (Throwable failure) {
+                            log.error("settings model injection skipped; native settings preserved", failure);
+                        }
+                        return result;
+                    });
+            entryHooks.put(loader, handle);
+            ledger.record(HookLedger.Layer.BUSINESS, "settings", "settings-native-initData-"
+                    + Integer.toHexString(System.identityHashCode(loader)), method.toGenericString());
+            log.info("settings business hook installed method=" + method + " frameworkHooks=0");
             return true;
-        } catch (Throwable throwable) {
-            log.error("settings injection skipped; core purifier unaffected", throwable);
-            return true;
+        } catch (Throwable failure) {
+            log.info("settings native entry not ready reason=" + failure.getClass().getSimpleName());
+            return false;
         }
     }
 
-    private View createEntry(Activity activity) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(activity, 18), 0, dp(activity, 18), 0);
-        row.setClickable(true);
-        row.setFocusable(true);
-
-        int cardColor = resolveColor(activity, android.R.attr.colorBackgroundFloating,
-                Color.WHITE);
-        GradientDrawable card = new GradientDrawable();
-        card.setColor(cardColor);
-        card.setCornerRadius(dp(activity, 12));
-        row.setBackground(new RippleDrawable(
-                ColorStateList.valueOf(0x18000000), card, null));
-
-        ImageView icon = new ImageView(activity);
-        Drawable iconDrawable = activity.getDrawable(android.R.drawable.ic_menu_manage);
-        if (iconDrawable != null) {
-            iconDrawable = iconDrawable.mutate();
-            iconDrawable.setTint(resolveColor(activity, android.R.attr.colorAccent, 0xff00a88f));
-            icon.setImageDrawable(iconDrawable);
-        }
-        row.addView(icon, new LinearLayout.LayoutParams(dp(activity, 24), dp(activity, 24)));
-
+    private void showConfigPage(Activity activity) {
+        if (activity.isFinishing() || activity.isDestroyed() || pages.contains(activity)) return;
+        // A real Dialog owns its back/cancel handling. The native settings
+        // Activity, fragment, toolbar and LazyColumn are never replaced/hidden.
+        Dialog dialog = new Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar);
+        dialog.setOwnerActivity(activity);
+        dialog.setCancelable(true);
+        dialog.setCanceledOnTouchOutside(false);
+        LinearLayout page = new LinearLayout(activity);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setFitsSystemWindows(true);
+        int background = resolveColor(activity, android.R.attr.colorBackground, 0xfff7f7fa);
+        page.setBackgroundColor(background);
+        LinearLayout toolbar = new LinearLayout(activity);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setBackgroundColor(resolveColor(activity, android.R.attr.colorBackgroundFloating, Color.WHITE));
+        TextView back = new TextView(activity);
+        back.setText("‹");
+        back.setContentDescription("返回酷安设置");
+        back.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+        back.setTextColor(resolveColor(activity, android.R.attr.textColorPrimary, Color.BLACK));
+        back.setGravity(Gravity.CENTER);
+        back.setFocusable(true);
+        back.setOnClickListener(view -> dialog.dismiss());
+        toolbar.addView(back, new LinearLayout.LayoutParams(dp(activity, 56), dp(activity, 56)));
         TextView title = new TextView(activity);
         title.setText("酷安净化");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         title.setTextColor(resolveColor(activity, android.R.attr.textColorPrimary, Color.BLACK));
-        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        titleParams.leftMargin = dp(activity, 14);
-        row.addView(title, titleParams);
-
-        TextView arrow = new TextView(activity);
-        arrow.setText("›");
-        arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
-        arrow.setGravity(Gravity.CENTER);
-        arrow.setTextColor(resolveColor(activity, android.R.attr.textColorSecondary, 0xff777777));
-        row.addView(arrow, new LinearLayout.LayoutParams(dp(activity, 24),
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        return row;
-    }
-
-    private void showConfigPage(Activity activity, PageState state) {
-        if (state.inConfig || state.transitioning) {
-            return;
-        }
+        toolbar.addView(title);
+        page.addView(toolbar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 56)));
         ScrollView scroll = new ScrollView(activity);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(resolveColor(activity, android.R.attr.colorBackground,
-                0xfff7f7fa));
         LinearLayout list = new LinearLayout(activity);
         list.setOrientation(LinearLayout.VERTICAL);
-        int side = dp(activity, 14);
-        list.setPadding(side, dp(activity, 14), side, dp(activity, 28));
+        list.setPadding(dp(activity, 14), dp(activity, 14), dp(activity, 14), dp(activity, 28));
         for (PurifierConfig.Feature feature : PurifierConfig.Feature.values()) {
-            list.addView(createSwitchRow(activity, feature),
-                    new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            list.addView(createSwitchRow(activity, feature), new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
-        scroll.addView(list, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        params.topMargin = state.originalComposeTop;
-        scroll.setElevation(dp(activity, 8));
-        state.frame.addView(scroll, params);
-        state.configPage = scroll;
-        state.exitNotified = false;
-        state.toolbarTitle.setText("酷安净化");
-        state.inConfig = true;
-        state.transitioning = true;
-        int width = Math.max(state.frame.getWidth(),
-                activity.getResources().getDisplayMetrics().widthPixels);
-        scroll.setTranslationX(width);
-        scroll.animate()
-                .translationX(0f)
-                .setDuration(280L)
-                .setInterpolator(AnimationUtils.loadInterpolator(activity,
-                        android.R.interpolator.fast_out_slow_in))
-                .setListener(new AnimatorListenerAdapter() {
-                    @Override
-                    public void onAnimationEnd(Animator animation) {
-                        if (state.configPage == scroll && state.inConfig) {
-                            state.compose.setVisibility(View.INVISIBLE);
-                            state.entry.setVisibility(View.INVISIBLE);
-                        }
-                        state.transitioning = false;
-                    }
-                })
-                .start();
-        log.info("settings config page shown inline=true coolapkActivity="
-                + activity.getClass().getName());
-    }
-
-    private void notifyConfigExit(Activity activity, PageState state) {
-        if (state == null || state.exitNotified) {
-            return;
+        scroll.addView(list);
+        page.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        dialog.setContentView(page);
+        if (!pages.open(activity, dialog)) return;
+        dialog.setOnDismissListener(ignored -> {
+            if (pages.close(activity, dialog)) {
+                Toast.makeText(activity.getApplicationContext(), EXIT_MESSAGE, Toast.LENGTH_LONG).show();
+                log.info("settings config dismissed returnToNative=true");
+            }
+        });
+        try {
+            dialog.show();
+            Window window = dialog.getWindow();
+            if (window != null) {
+                window.setBackgroundDrawable(new ColorDrawable(background));
+                window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                window.setStatusBarColor(activity.getWindow().getStatusBarColor());
+                window.setNavigationBarColor(activity.getWindow().getNavigationBarColor());
+                // The host uses modern edge-to-edge bar controls; copying its
+                // legacy flags loses contrast and can put our toolbar under it.
+                boolean light = Color.red(background) * .299 + Color.green(background) * .587
+                        + Color.blue(background) * .114 >= 128;
+                window.getDecorView().setSystemUiVisibility(light
+                        ? View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0);
+                if (Build.VERSION.SDK_INT >= 30 && window.getInsetsController() != null) {
+                    int appearance = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                    window.getInsetsController().setSystemBarsAppearance(light ? appearance : 0, appearance);
+                }
+            }
+            log.info("settings config shown owner=" + activity.getClass().getName() + " navigation=dialog");
+        } catch (Throwable failure) {
+            pages.close(activity, dialog);
+            dialog.dismiss();
+            log.error("settings config page show failed", failure);
         }
-        state.exitNotified = true;
-        Context application = activity.getApplicationContext();
-        mainHandler.post(() -> Toast.makeText(application,
-                EXIT_MESSAGE, Toast.LENGTH_LONG).show());
-        log.info("settings config page exited toastRequested=true");
-    }
-
-    private void onActivityDestroyed(Activity activity) {
-        injectionRetry.cancel(activity);
-        PageState state = injected.remove(activity);
-        if (state == null) {
-            return;
-        }
-        if (state.inConfig) {
-            notifyConfigExit(activity, state);
-        }
-        state.dispose();
-        log.info("settings page state removed on destroy remaining=" + injected.size());
     }
 
     @SuppressWarnings("deprecation")
@@ -372,38 +280,6 @@ final class SettingsHooks {
         return row;
     }
 
-    private static TextView findTextView(View view, String expected) {
-        if (view instanceof TextView && expected.contentEquals(((TextView) view).getText())) {
-            return (TextView) view;
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                TextView found = findTextView(group.getChildAt(i), expected);
-                if (found != null) {
-                    return found;
-                }
-            }
-        }
-        return null;
-    }
-
-    private static View findByClassName(View view, String className) {
-        if (className.equals(view.getClass().getName())) {
-            return view;
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = findByClassName(group.getChildAt(i), className);
-                if (found != null) {
-                    return found;
-                }
-            }
-        }
-        return null;
-    }
-
     private static int dp(Context context, int value) {
         return Math.round(value * context.getResources().getDisplayMetrics().density);
     }
@@ -425,36 +301,4 @@ final class SettingsHooks {
         return fallback;
     }
 
-    private static final class PageState {
-        final FrameLayout frame;
-        final View compose;
-        final View entry;
-        final TextView toolbarTitle;
-        final int originalComposeTop;
-        View configPage;
-        boolean inConfig;
-        boolean exitNotified;
-        boolean transitioning;
-
-        PageState(FrameLayout frame, View compose, View entry, TextView toolbarTitle,
-                  int originalComposeTop) {
-            this.frame = frame;
-            this.compose = compose;
-            this.entry = entry;
-            this.toolbarTitle = toolbarTitle;
-            this.originalComposeTop = originalComposeTop;
-        }
-
-        void dispose() {
-            entry.animate().cancel();
-            entry.setOnClickListener(null);
-            if (configPage != null) {
-                configPage.animate().cancel();
-                if (configPage.getParent() == frame) {
-                    frame.removeView(configPage);
-                }
-                configPage = null;
-            }
-        }
-    }
 }

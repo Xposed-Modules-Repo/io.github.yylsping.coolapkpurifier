@@ -150,7 +150,7 @@ tasks.register("verifyReleaseSignerPolicy") {
 tasks.register("stageReleaseCandidate") {
     group = "build"
     description = "Copy the release APK to dist and generate/verify SHA-256"
-    dependsOn("assembleRelease", "verifyReleaseSignerPolicy")
+    dependsOn("assembleRelease", "verifyReleaseSignerPolicy", "stageReleaseNotes")
 
     doLast {
         check(signingPropertiesFile.isFile) {
@@ -236,10 +236,84 @@ tasks.register("stageReleaseCandidate") {
  * Kept separate from staging so a new candidate can be built before its final
  * hash exists, while the final preflight still fails on stale release notes.
  */
+// The repository copy resolves from the root; its staged copy resolves from dist.
+// Transform only relative Markdown destinations, never the document's content/hash.
+val markdownDestination = Regex("""\]\(([^)]+)\)""")
+fun relativeMarkdownTarget(raw: String): String? {
+    val target = raw.trim().removeSurrounding("<", ">").substringBefore('#')
+    return target.takeIf {
+        it.endsWith(".md") && !it.startsWith("/")
+                && !Regex("^[A-Za-z][A-Za-z0-9+.-]*:").containsMatchIn(it)
+    }
+}
+fun stagedReleaseNotes(text: String): String = markdownDestination.replace(text) { match ->
+    val raw = match.groupValues[1].trim()
+    if (relativeMarkdownTarget(raw) == null) match.value
+    else if (raw.startsWith("<") && raw.endsWith(">")) "](<../" + raw.drop(1)
+            .dropLast(1) + ">)"
+    else "](../$raw)"
+}
+
+tasks.register("stageReleaseNotes") {
+    group = "documentation"
+    val version = android.defaultConfig.versionName
+    val source = rootProject.file("release-notes-$version.md")
+    val destination = rootProject.file("dist/release-notes-$version.md")
+    inputs.file(source)
+    outputs.file(destination)
+    doLast {
+        destination.parentFile.mkdirs()
+        destination.writeText(stagedReleaseNotes(source.readText(Charsets.UTF_8)), Charsets.UTF_8)
+    }
+}
+
+tasks.register("verifyDocumentationLinks") {
+    group = "verification"
+    dependsOn("stageReleaseNotes")
+    doLast {
+        // Guard the relocation operation as well as the actual current documents.
+        check(stagedReleaseNotes("[report](report.md#result) [web](https://example.org/a.md)")
+                == "[report](../report.md#result) [web](https://example.org/a.md)")
+        check(stagedReleaseNotes("[report](<some report.md#result>)")
+                == "[report](<../some report.md#result>)")
+        val files = rootProject.fileTree(rootProject.projectDir) {
+            include("README.md", "release-notes-2.2.1.md", "*report.md", "dist/release-notes-2.2.1.md")
+        }.files
+        var checked = 0
+        files.forEach { document ->
+            markdownDestination.findAll(document.readText(Charsets.UTF_8)).forEach { match ->
+                relativeMarkdownTarget(match.groupValues[1])?.let { relative ->
+                    val target = document.parentFile.resolve(relative).normalize()
+                    check(target.isFile) { "Broken Markdown link: $document -> $relative" }
+                    checked++
+                }
+            }
+        }
+        logger.lifecycle("Documentation links passed: $checked relative Markdown targets")
+    }
+}
+
+tasks.register("verifySettingsReflectionNames") {
+    group = "verification"
+    dependsOn("minifyCompatibleWithR8", "minifyReleaseWithR8")
+    doLast {
+        listOf("compatible", "release").forEach { variant ->
+            val mapping = layout.buildDirectory.file("outputs/mapping/$variant/mapping.txt")
+                .get().asFile.readText()
+            listOf("kotlin.Unit", "kotlin.jvm.functions.Function1").forEach { name ->
+                check(mapping.lineSequence().any { it == "$name -> $name:" }) {
+                    "Host reflection name was obfuscated in $variant: $name"
+                }
+            }
+        }
+        logger.lifecycle("Host settings reflection names retained in Compatible and Release")
+    }
+}
+
 tasks.register("verifyReleaseNotesPreflight") {
     group = "verification"
     description = "Verify release-notes hash and signer set against staged APK"
-    dependsOn("stageReleaseCandidate")
+    dependsOn("stageReleaseCandidate", "verifyDocumentationLinks", "verifySettingsReflectionNames")
 
     doLast {
         val version = android.defaultConfig.versionName

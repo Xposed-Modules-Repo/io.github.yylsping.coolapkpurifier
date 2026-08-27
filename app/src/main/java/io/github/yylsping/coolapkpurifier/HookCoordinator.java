@@ -1716,7 +1716,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     loaded.isEffectiveEnabled(PurifierConfig.Feature.FEED_SPONSOR, loadedMajor),
                     loaded.isEffectiveEnabled(PurifierConfig.Feature.REPLY_SPONSOR, loadedMajor));
             SettingsHooks loadedSettingsHooks = new SettingsHooks(
-                    log, loaded, loadedMajor, runtimeHealth);
+                    module, hookLedger, log, loaded, loadedMajor, runtimeHealth);
             final long[] boundGeneration = {0L};
             configurationTransaction.publish(() -> state.isTerminal(),
                     (generation, loader, activated, terminal) -> {

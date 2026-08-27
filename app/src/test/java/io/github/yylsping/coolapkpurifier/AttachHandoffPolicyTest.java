@@ -104,7 +104,8 @@ public class AttachHandoffPolicyTest {
         HookCoordinator coordinator = new HookCoordinator(null, log, getClass().getClassLoader());
         PurifierConfig config = new PurifierConfig(folder.getRoot(),
                 (source, destination) -> source.renameTo(destination), log);
-        SettingsHooks settings = new SettingsHooks(log, config, 16);
+        SettingsHooks settings = new SettingsHooks(null, new HookLedger(), log,
+                config, 16, new FeatureRuntimeHealth());
         set(settings, "lifecycleCallbacksInstalled", lifecycleReady);
         set(coordinator, "appContext", new Application());
         set(coordinator, "config", config);
