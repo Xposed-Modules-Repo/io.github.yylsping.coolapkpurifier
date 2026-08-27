@@ -11,15 +11,21 @@ final class FrameworkRetirePolicy {
     }
 
     static boolean shouldRetireInstrumentationSafety(BootstrapState terminalState,
-                                                     boolean splashSpecificInstalled) {
-        return terminalState == BootstrapState.READY && splashSpecificInstalled;
+                                                     boolean splashSpecificInstalled,
+                                                     boolean lifecycleGuardInstalled) {
+        return terminalState == BootstrapState.READY && splashSpecificInstalled
+                && lifecycleGuardInstalled;
     }
 
     /** Human-readable retention reason for the retained branch. */
     static String retainReason(BootstrapState terminalState,
-                               boolean splashSpecificInstalled) {
+                               boolean splashSpecificInstalled,
+                               boolean lifecycleGuardInstalled) {
         if (terminalState == BootstrapState.READY && !splashSpecificInstalled) {
             return "splashSpecificMissing";
+        }
+        if (terminalState == BootstrapState.READY && !lifecycleGuardInstalled) {
+            return "splashLifecycleGuardMissing";
         }
         return "terminal:" + terminalState;
     }

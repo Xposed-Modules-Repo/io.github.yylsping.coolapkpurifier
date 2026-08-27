@@ -36,15 +36,22 @@ final class SettingsHooks {
     private final ModuleLog log;
     private final PurifierConfig config;
     private final int coolapkMajor;
+    private final FeatureRuntimeHealth runtimeHealth;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final PageStateRegistry<Activity, PageState> injected = new PageStateRegistry<>();
     private volatile boolean lifecycleCallbacksInstalled;
 
     SettingsHooks(ModuleLog log, PurifierConfig config,
                   int coolapkMajor) {
+        this(log, config, coolapkMajor, new FeatureRuntimeHealth());
+    }
+
+    SettingsHooks(ModuleLog log, PurifierConfig config,
+                  int coolapkMajor, FeatureRuntimeHealth runtimeHealth) {
         this.log = log;
         this.config = config;
         this.coolapkMajor = coolapkMajor;
+        this.runtimeHealth = runtimeHealth;
     }
 
     void install(Context context) {
@@ -217,7 +224,7 @@ final class SettingsHooks {
         for (PurifierConfig.Feature feature : PurifierConfig.Feature.values()) {
             list.addView(createSwitchRow(activity, feature),
                     new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 68)));
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
         scroll.addView(list, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -282,7 +289,8 @@ final class SettingsHooks {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(context, 18), 0, dp(context, 12), 0);
+        row.setMinimumHeight(dp(context, 68));
+        row.setPadding(dp(context, 18), dp(context, 8), dp(context, 12), dp(context, 8));
 
         GradientDrawable background = new GradientDrawable();
         background.setColor(resolveColor(context, android.R.attr.colorBackgroundFloating,
@@ -305,6 +313,25 @@ final class SettingsHooks {
             summary.setTextColor(resolveColor(context,
                     android.R.attr.textColorSecondary, 0xff888888));
             labels.addView(summary);
+        }
+        if (feature == PurifierConfig.Feature.REPLY_SPONSOR && supported) {
+            TextView status = new TextView(context);
+            status.setText(runtimeHealth.replyMessage());
+            status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            status.setTextColor(resolveColor(context,
+                    android.R.attr.textColorSecondary, 0xff888888));
+            Runnable refresh = () -> mainHandler.post(
+                    () -> status.setText(runtimeHealth.replyMessage()));
+            status.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                @Override public void onViewAttachedToWindow(View view) {
+                    runtimeHealth.addListener(refresh);
+                    refresh.run();
+                }
+                @Override public void onViewDetachedFromWindow(View view) {
+                    runtimeHealth.removeListener(refresh);
+                }
+            });
+            labels.addView(status);
         }
         row.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));

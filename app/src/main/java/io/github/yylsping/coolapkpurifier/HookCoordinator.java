@@ -83,8 +83,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile Handler replyRetryHandler;
     private volatile Application.ActivityLifecycleCallbacks replyRetryLifecycle;
     private volatile Application replyRetryApplication;
-    private int replyRetryAttempt;
-    private volatile long lastReplyUiAttemptElapsed;
+    private volatile ReplyDiscoveryBudget replyBudget;
+    private final FeatureRuntimeHealth runtimeHealth = new FeatureRuntimeHealth();
+    private final SplashLifecycleGuard splashLifecycleGuard;
+    private volatile List<String> coreMissingRequired = java.util.Collections.emptyList();
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
     private final OnceFlag terminalCleaned = new OnceFlag();
@@ -130,6 +132,11 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         this.runtimeDexObserver = new RuntimeDexObserver(module, log, this);
         this.recoveryController = new RecoveryController(log, null, null);
         this.firstAdaptationToast = new FirstAdaptationToast(log);
+        this.splashLifecycleGuard = new SplashLifecycleGuard(splashGate,
+                () -> config == null || config.isEffectiveEnabled(
+                        PurifierConfig.Feature.SPLASH, coolapkMajor),
+                activity -> splashHooks.finishSplash(activity, "lifecycle"), log);
+        runtimeHealth.addListener(this::logRuntimeHealth);
     }
 
     void install() throws ReflectiveOperationException {
@@ -1207,8 +1214,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             int lastDot = name.lastIndexOf('.');
             sb.append(lastDot < 0 ? name : name.substring(lastDot + 1)).append('=')
                     .append(featureInstallState.hasSplashClass(name)
-                            ? "specific" : splashHooks.isInstrumentationSafetyActive()
-                                    ? "passive" : "uncovered");
+                            ? "specific" : splashLifecycleGuard.isInstalled()
+                                    ? "lifecycle" : splashHooks.isInstrumentationSafetyActive()
+                                            ? "passive" : "uncovered");
         }
         return sb.toString();
     }
@@ -1275,9 +1283,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         // installed, the generic Instrumentation safety gate is really
         // unhooked; every other terminal outcome retains it as the documented
         // DEGRADED fallback.
+        ensureSplashLifecycleGuard();
         boolean instrumentationRetired =
                 FrameworkRetirePolicy.shouldRetireInstrumentationSafety(
-                        terminalSnapshot.terminalState, isSplashReady());
+                        terminalSnapshot.terminalState, isSplashReady(), splashLifecycleGuard.isInstalled());
         boolean instrumentationSafetyActive;
         if (instrumentationRetired) {
             SplashHooks.SafetyRetireResult safetyResult =
@@ -1287,7 +1296,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             instrumentationSafetyActive = splashHooks.isInstrumentationSafetyActive();
             log.info("instrumentation safety retained reason="
                     + FrameworkRetirePolicy.retainReason(
-                            terminalSnapshot.terminalState, isSplashReady()));
+                            terminalSnapshot.terminalState, isSplashReady(), splashLifecycleGuard.isInstalled()));
         }
         String observerRetireReason = "terminal:" + state
                 + " unhooked=" + runtimeWatcherResult.totalUnhooked
@@ -1333,6 +1342,13 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         traceAfterContext("hookLedger", ledgerSummary);
         traceAfterContext("instrumentationSafety",
                 "retired=" + instrumentationRetired + " active=" + instrumentationSafetyActive);
+        coreMissingRequired = terminalSnapshot.missingRequired;
+        runtimeHealth.updateCore(isSplashReady(), entityListHooks.hookedMethodCount() > 0);
+        if (hooks != null && hooks.isReplyHolderInstalled()) runtimeHealth.replyInstalled();
+        if (terminalSnapshot.terminalState == BootstrapState.DEGRADED) {
+            runtimeHealth.replyUnavailable("bootstrapDegraded");
+        }
+        logRuntimeHealth();
         worker.shutdown();
         log.info("coordinator bootstrap lifecycle retired executorShutdown=true"
                 + " runtimeWatcherUnhookedThisClose="
@@ -1425,182 +1441,124 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
     }
 
-    /**
-     * Mode A-ZF hook-free post-READY reply discovery: the temporary
-     * loadClass hooks are retired at READY, so bounded plain Class.forName
-     * retries on a dedicated thread install the holder once its dex chunk is
-     * appended and persist it for the next (fully cached, zero-framework)
-     * startup. The reply dex chunk typically appears only after the user
-     * opens a comment section, so a plain ActivityLifecycleCallbacks observer
-     * (the same Android-API mechanism the Settings entry uses — not an Xposed
-     * hook) retries on every activity resume and unregisters itself on
-     * success. No framework hook is involved at any point.
-     */
+    private Application lifecycleApplication() {
+        Context current = currentApplication();
+        if (current instanceof Application) return (Application) current;
+        return appContext instanceof Application ? (Application) appContext : null;
+    }
+
+    private void ensureSplashLifecycleGuard() {
+        splashLifecycleGuard.install(lifecycleApplication());
+    }
+
+    private void logRuntimeHealth() {
+        String summary = "runtime health state=" + state
+                + " coreMissingRequired=" + coreMissingRequired
+                + " frameworkActive=" + hookLedger.hasActiveFrameworkHooks()
+                + " frameworkActiveHooks=" + hookLedger.activeIds(HookLedger.Layer.FRAMEWORK)
+                + " splashLifecycleGuard=" + splashLifecycleGuard.isInstalled()
+                + " " + runtimeHealth.summary();
+        log.info(summary);
+        traceAfterContext("runtimeHealth", summary);
+    }
+
+    /** All actual retry work is serialized on one bounded worker lane. */
     private void scheduleReplyDiscoveryRetry() {
         FeatureHooks hooks = featureHooks;
-        if (hooks == null || !hooks.isReplyHolderSelected()) {
+        if (hooks == null || !hooks.isReplyHolderSelected()) return;
+        if (hooks.isReplyHolderInstalled()) {
+            runtimeHealth.replyInstalled();
             return;
         }
-        Handler handler = replyRetryHandler;
-        if (handler == null) {
-            synchronized (this) {
-                if (replyRetryHandler == null) {
-                    HandlerThread thread = new HandlerThread("pool-reply-retry");
-                    thread.start();
-                    replyRetryThread = thread;
-                    replyRetryHandler = new Handler(thread.getLooper());
+        if (replyBudget != null) return;
+        replyBudget = new ReplyDiscoveryBudget(SystemClock.elapsedRealtime());
+        HandlerThread thread = new HandlerThread("pool-reply-retry");
+        thread.start();
+        replyRetryThread = thread;
+        Handler handler = new Handler(thread.getLooper());
+        replyRetryHandler = handler;
+        Application application = lifecycleApplication();
+        if (application != null) {
+            Application.ActivityLifecycleCallbacks callback = new Application.ActivityLifecycleCallbacks() {
+                @Override public void onActivityResumed(Activity activity) {
+                    if (!replyBudget.isStopped()) handler.post(() -> runReplyAttempt(true));
                 }
-                handler = replyRetryHandler;
-            }
-        }
-        if (replyRetryLifecycle == null) {
-            // The protected shell can attach more than one Application; the
-            // system dispatches lifecycle callbacks on the CURRENT instance
-            // (same resolution the Settings entry uses), not necessarily the
-            // first one the attach hook observed.
-            Context current = currentApplication();
-            Application application = current instanceof Application
-                    ? (Application) current : null;
-            if (application == null && appContext instanceof Application) {
-                application = (Application) appContext;
-            }
-            if (application == null) {
-                log.info("reply retry lifecycle observer skipped reason=applicationMissing");
-                return;
-            }
-            replyRetryApplication = application;
-            replyRetryLifecycle = new Application.ActivityLifecycleCallbacks() {
-                @Override
-                public void onActivityResumed(Activity activity) {
-                    attemptReplyInstallFromUi(
-                            "activityResumed:" + activity.getClass().getSimpleName());
-                }
-
-                @Override
-                public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
-                }
-
-                @Override
-                public void onActivityStarted(Activity activity) {
-                }
-
-                @Override
-                public void onActivityPaused(Activity activity) {
-                }
-
-                @Override
-                public void onActivityStopped(Activity activity) {
-                }
-
-                @Override
-                public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
-                }
-
-                @Override
-                public void onActivityDestroyed(Activity activity) {
-                }
+                @Override public void onActivityCreated(Activity activity, Bundle state) { }
+                @Override public void onActivityStarted(Activity activity) { }
+                @Override public void onActivityPaused(Activity activity) { }
+                @Override public void onActivityStopped(Activity activity) { }
+                @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
+                @Override public void onActivityDestroyed(Activity activity) { }
             };
-            ((Application) application).registerActivityLifecycleCallbacks(
-                    replyRetryLifecycle);
-            log.info("reply retry lifecycle observer registered applicationIdentity="
-                    + System.identityHashCode(application));
+            try {
+                application.registerActivityLifecycleCallbacks(callback);
+                replyRetryApplication = application;
+                replyRetryLifecycle = callback;
+                log.info("reply retry lifecycle observer registered maxResumeAttempts="
+                        + ReplyDiscoveryBudget.MAX_RESUME_ATTEMPTS
+                        + " maxElapsedMs=" + ReplyDiscoveryBudget.MAX_ELAPSED_MILLIS);
+            } catch (Throwable failure) {
+                log.error("reply retry lifecycle registration failed; timed lane retained", failure);
+            }
         }
-        if (!ReplyDiscoveryRetryPolicy.shouldRetry(
-                hooks.isReplyHolderSelected(), hooks.isReplyHolderInstalled(),
-                replyRetryAttempt)) {
-            quitReplyRetryThread("alreadyInstalled");
-            return;
-        }
-        long delay = ReplyDiscoveryRetryPolicy.delayFor(replyRetryAttempt);
-        handler.postDelayed(this::runReplyDiscoveryRetry, delay);
-        log.info("reply retry scheduled attempt=" + (replyRetryAttempt + 1)
-                + " delayMs=" + delay);
+        handler.postDelayed(() -> finishReplyBudget(), ReplyDiscoveryBudget.MAX_ELAPSED_MILLIS);
+        handler.postDelayed(() -> runReplyAttempt(false), ReplyDiscoveryRetryPolicy.delayFor(0));
     }
 
-    private void attemptReplyInstallFromUi(String source) {
-        FeatureHooks hooks = featureHooks;
-        if (hooks == null || state != BootstrapState.READY
-                || !hooks.isReplyHolderSelected() || hooks.isReplyHolderInstalled()) {
-            unregisterReplyRetryLifecycle("inactiveOrDone");
-            return;
-        }
+    private void runReplyAttempt(boolean fromResume) {
+        ReplyDiscoveryBudget budget = replyBudget;
+        if (budget == null || budget.isStopped() || finishReplyBudget()) return;
         long now = SystemClock.elapsedRealtime();
-        if (now - lastReplyUiAttemptElapsed
-                < ReplyDiscoveryRetryPolicy.RESUME_ATTEMPT_MIN_INTERVAL_MILLIS) {
+        boolean allowed = fromResume ? budget.tryResume(now) : budget.tryTimed(now);
+        if (!allowed) {
+            finishReplyBudget();
             return;
         }
-        lastReplyUiAttemptElapsed = now;
-        boolean installed = false;
         try {
-            installed = hooks.tryDirectReplyInstall();
-        } catch (Throwable throwable) {
-            log.error("reply retry ui attempt failed", throwable);
+            featureHooks.tryDirectReplyInstall();
+        } catch (Throwable failure) {
+            log.error("reply retry attempt failed", failure);
         }
-        if (installed) {
-            log.info("reply retry installed=true source=" + source);
-            unregisterReplyRetryLifecycle("installed");
-            quitReplyRetryThread("installed");
+        if (!finishReplyBudget() && !fromResume) {
+            Handler handler = replyRetryHandler;
+            if (handler != null) handler.postDelayed(() -> runReplyAttempt(false),
+                    ReplyDiscoveryRetryPolicy.delayFor(budget.timedAttempts()));
         }
     }
 
-    private void unregisterReplyRetryLifecycle(String reason) {
+    private boolean finishReplyBudget() {
+        ReplyDiscoveryBudget budget = replyBudget;
+        FeatureHooks hooks = featureHooks;
+        if (budget == null || hooks == null) return true;
+        return budget.finishIfNeeded(hooks.isReplyHolderInstalled(),
+                SystemClock.elapsedRealtime(), this::unregisterReplyRetryLifecycle,
+                this::quitReplyRetryThread, runtimeHealth);
+    }
+
+    private void unregisterReplyRetryLifecycle() {
         Application.ActivityLifecycleCallbacks observer = replyRetryLifecycle;
         Application application = replyRetryApplication;
-        if (observer == null || application == null) {
-            return;
-        }
+        if (observer == null || application == null) return;
         try {
             application.unregisterActivityLifecycleCallbacks(observer);
             replyRetryLifecycle = null;
             replyRetryApplication = null;
-            log.info("reply retry lifecycle observer removed reason=" + reason);
-        } catch (Throwable throwable) {
-            log.error("reply retry lifecycle unregister failed", throwable);
+            log.info("reply retry lifecycle observer stopped unregister=true");
+        } catch (Throwable failure) {
+            // The stopped budget makes any retained callback inert.
+            log.error("reply retry lifecycle unregister failed logicalStopped=true", failure);
         }
     }
 
-    private void runReplyDiscoveryRetry() {
-        FeatureHooks hooks = featureHooks;
-        if (hooks == null || state != BootstrapState.READY) {
-            quitReplyRetryThread("stateChanged");
-            return;
-        }
-        boolean installed = false;
-        try {
-            installed = hooks.tryDirectReplyInstall();
-        } catch (Throwable throwable) {
-            log.error("reply retry attempt failed", throwable);
-        }
-        replyRetryAttempt++;
-        if (installed) {
-            log.info("reply retry installed=true attempt=" + replyRetryAttempt);
-            unregisterReplyRetryLifecycle("installed");
-            quitReplyRetryThread("installed");
-            return;
-        }
-        if (ReplyDiscoveryRetryPolicy.shouldRetry(
-                hooks.isReplyHolderSelected(), hooks.isReplyHolderInstalled(),
-                replyRetryAttempt)) {
-            long delay = ReplyDiscoveryRetryPolicy.delayFor(replyRetryAttempt);
-            replyRetryHandler.postDelayed(this::runReplyDiscoveryRetry, delay);
-        } else {
-            // Timed lane exhausted; the lifecycle observer keeps retrying on
-            // every activity resume until the comment-section dex appears.
-            log.info("reply retry timed lane exhausted attempts=" + replyRetryAttempt
-                    + " lifecycleObserver=active");
-            quitReplyRetryThread("timedExhausted");
-        }
-    }
-
-    private void quitReplyRetryThread(String reason) {
+    private void quitReplyRetryThread() {
+        Handler handler = replyRetryHandler;
+        if (handler != null) handler.removeCallbacksAndMessages(null);
         HandlerThread thread = replyRetryThread;
-        if (thread == null) {
-            return;
-        }
         replyRetryThread = null;
         replyRetryHandler = null;
-        thread.quitSafely();
-        log.info("reply retry thread quit reason=" + reason);
+        if (thread != null) thread.quitSafely();
+        log.info("reply retry stopped timedAttempts=" + replyBudget.timedAttempts()
+                + " observerActive=" + (replyRetryLifecycle != null));
     }
 
     private void watchdog(String reason) {
@@ -1740,8 +1698,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     entityListHooks, plan, featureInstallState, hookLedger);
             loadedFeatureHooks.setSemanticDiscoveryListener(
                     this::onSemanticClassDiscovered);
+            runtimeHealth.configure(
+                    loaded.isEffectiveEnabled(PurifierConfig.Feature.SPLASH, loadedMajor),
+                    loaded.isEffectiveEnabled(PurifierConfig.Feature.FEED_SPONSOR, loadedMajor),
+                    loaded.isEffectiveEnabled(PurifierConfig.Feature.REPLY_SPONSOR, loadedMajor));
             SettingsHooks loadedSettingsHooks = new SettingsHooks(
-                    log, loaded, loadedMajor);
+                    log, loaded, loadedMajor, runtimeHealth);
             final long[] boundGeneration = {0L};
             configurationTransaction.publish(() -> state.isTerminal(),
                     (generation, loader, activated, terminal) -> {
@@ -1762,6 +1724,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             Context lifecycleContext = currentApplication();
             loadedSettingsHooks.install(lifecycleContext != null
                     ? lifecycleContext : application);
+            ensureSplashLifecycleGuard();
             // Mode A-ZF Phase 3: no eager lazy-resolver install here. The
             // temporary loadClass hooks are only installed by a resolution
             // session that ends with selected semantic targets still missing.

@@ -194,7 +194,7 @@ final class SplashHooks {
         }
     }
 
-    private void finishSplash(Activity activity, String source) {
+    void finishSplash(Activity activity, String source) {
         try {
             if (activity.isFinishing()) {
                 return;

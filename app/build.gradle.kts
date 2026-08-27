@@ -20,8 +20,8 @@ android {
         applicationId = "io.github.yylsping.coolapkpurifier"
         minSdk = 28
         targetSdk = 35
-        versionCode = 10
-        versionName = "2.2.0"
+        versionCode = 11
+        versionName = "2.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -228,7 +228,7 @@ tasks.register("stageReleaseCandidate") {
 }
 
 /**
- * Run after release-notes-2.2.0.md is synchronized with the staged candidate.
+ * Run after versioned release notes are synchronized with the staged candidate.
  * Kept separate from staging so a new candidate can be built before its final
  * hash exists, while the final preflight still fails on stale release notes.
  */

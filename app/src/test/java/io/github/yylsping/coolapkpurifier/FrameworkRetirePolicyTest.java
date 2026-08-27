@@ -11,25 +11,25 @@ public class FrameworkRetirePolicyTest {
     @Test
     public void cleanReadyWithSpecificSplashRetiresSafetyGate() {
         assertTrue(FrameworkRetirePolicy.shouldRetireInstrumentationSafety(
-                BootstrapState.READY, true));
+                BootstrapState.READY, true, true));
     }
 
     @Test
     public void readyWithoutSpecificSplashRetainsSafetyGate() {
         assertFalse(FrameworkRetirePolicy.shouldRetireInstrumentationSafety(
-                BootstrapState.READY, false));
+                BootstrapState.READY, false, true));
         assertEquals("splashSpecificMissing",
-                FrameworkRetirePolicy.retainReason(BootstrapState.READY, false));
+                FrameworkRetirePolicy.retainReason(BootstrapState.READY, false, true));
     }
 
     @Test
     public void degradedRetainsSafetyGateEvenWithSpecificSplash() {
         assertFalse(FrameworkRetirePolicy.shouldRetireInstrumentationSafety(
-                BootstrapState.DEGRADED, true));
+                BootstrapState.DEGRADED, true, true));
         assertEquals("terminal:DEGRADED",
-                FrameworkRetirePolicy.retainReason(BootstrapState.DEGRADED, true));
+                FrameworkRetirePolicy.retainReason(BootstrapState.DEGRADED, true, true));
         assertEquals("terminal:DEGRADED",
-                FrameworkRetirePolicy.retainReason(BootstrapState.DEGRADED, false));
+                FrameworkRetirePolicy.retainReason(BootstrapState.DEGRADED, false, true));
     }
 
     @Test
@@ -39,7 +39,7 @@ public class FrameworkRetirePolicyTest {
                 continue;
             }
             assertFalse(FrameworkRetirePolicy.shouldRetireInstrumentationSafety(
-                    state, true));
+                    state, true, true));
         }
     }
 }

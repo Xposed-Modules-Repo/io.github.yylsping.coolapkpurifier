@@ -31,7 +31,9 @@ final class TargetResolver {
             new HashSet<>(Arrays.asList(
                     "com.coolapk.market.view.splash.SplashActivity",
                     "com.coolapk.market.view.splash.SplashAdActivity",
-                    "com.coolapk.market.view.splash.FullScreenAdActivity")));
+                    "com.coolapk.market.view.splash.FullScreenAdActivity",
+                    "com.coolapk.market.view.ad.SplashAdActivity",
+                    "com.coolapk.market.view.ad.FullScreenAdActivity")));
 
     private TargetResolver() {
     }
