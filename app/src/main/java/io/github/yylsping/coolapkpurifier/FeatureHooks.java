@@ -50,6 +50,7 @@ final class FeatureHooks {
     private final Set<View> guardedHolderViews = java.util.Collections.newSetFromMap(
             new WeakHashMap<>());
     private final LazyHookRegistry lazyHooks = new LazyHookRegistry();
+    private final OnceFlag relatedContentLogged = new OnceFlag();
     private volatile SemanticClassDiscoveredListener discoveryListener;
     private boolean targetPlanLogged;
     private boolean lazyDiscoveryPermanentlyDisabled;
@@ -144,6 +145,13 @@ final class FeatureHooks {
         if (plan.resolveDetailSponsor) {
             installMethod(targets.get(TargetResolver.KEY_DETAIL_SPONSOR), loader,
                     expectedGeneration);
+        }
+        if (plan.resolveRelatedData) {
+            ResolvedTarget related = targets.get(TargetResolver.KEY_RELATED_DATA);
+            if (related != null && related.methodDescriptor != null
+                    && !related.methodDescriptor.isEmpty()) {
+                installMethod(related, loader, expectedGeneration);
+            }
         }
         retireLazyResolversIfComplete();
     }
@@ -486,6 +494,7 @@ final class FeatureHooks {
                 && (!plan.resolveTopicRecommend
                 || installState.hasPrimaryHook(TargetResolver.KEY_TOPIC_RECOMMEND))
                 && (!plan.resolveRelatedData
+                || installState.hasPrimaryHook(TargetResolver.KEY_RELATED_DATA)
                 || installState.hasFallbackHook(TargetResolver.KEY_RELATED_DATA))
                 && (!plan.resolveDetailSponsor
                 || installState.hasFallbackHook(TargetResolver.KEY_DETAIL_SPONSOR));
@@ -675,6 +684,15 @@ final class FeatureHooks {
                             method.toGenericString().hashCode()))
                     .intercept(chain -> {
                         boolean block = shouldBlock(key);
+                        if (TargetResolver.KEY_RELATED_DATA.equals(key)) {
+                            Object original = chain.proceed();
+                            Object filtered = filterRelatedData(original, block);
+                            if (filtered != original && relatedContentLogged.tryOnce()) {
+                                log.info("feature content filtered key=" + key
+                                        + " originalSize=" + ((List<?>) original).size());
+                            }
+                            return filtered;
+                        }
                         if (!block) {
                             return chain.proceed();
                         }
@@ -715,6 +733,12 @@ final class FeatureHooks {
             return config.isEffectiveEnabled(PurifierConfig.Feature.DETAIL_SPONSOR, coolapkMajor);
         }
         return false;
+    }
+
+    /** Preserve null/empty/disabled values and never mutate the host's model list. */
+    static Object filterRelatedData(Object original, boolean block) {
+        return block && original instanceof List<?> && !((List<?>) original).isEmpty()
+                ? java.util.Collections.emptyList() : original;
     }
 
     boolean requiredTargetsReady(Map<String, ResolvedTarget> targets) {

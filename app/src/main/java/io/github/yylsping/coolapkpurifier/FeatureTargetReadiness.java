@@ -25,9 +25,15 @@ final class FeatureTargetReadiness {
         requireInstalledHook(config, coolapkMajor, installState,
                 PurifierConfig.Feature.AUTO_COMMENT,
                 TargetResolver.KEY_AUTO_COMMENT, false, missing);
-        requireInstalledHook(config, coolapkMajor, installState,
-                PurifierConfig.Feature.RELATED_DATA,
-                TargetResolver.KEY_RELATED_DATA, true, missing);
+        if (config.isEffectiveEnabled(PurifierConfig.Feature.RELATED_DATA, coolapkMajor)) {
+            ResolvedTarget related = targets.get(TargetResolver.KEY_RELATED_DATA);
+            boolean getterInstalled = related != null
+                    && related.methodDescriptor != null && !related.methodDescriptor.isEmpty()
+                    && installState.hasPrimaryHook(TargetResolver.KEY_RELATED_DATA);
+            if (!getterInstalled && !installState.hasFallbackHook(TargetResolver.KEY_RELATED_DATA)) {
+                missing.add(TargetResolver.KEY_RELATED_DATA + ":holderHook");
+            }
+        }
         return missing;
     }
 

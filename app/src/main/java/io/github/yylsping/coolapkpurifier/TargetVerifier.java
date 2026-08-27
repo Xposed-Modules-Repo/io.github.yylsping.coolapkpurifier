@@ -59,6 +59,9 @@ final class TargetVerifier {
                 case TargetResolver.KEY_DETAIL_SPONSOR:
                     return isDetailSponsorGetter(method)
                             ? null : "detail sponsor getter shape mismatch";
+                case TargetResolver.KEY_RELATED_DATA:
+                    return isRelatedDataGetter(method)
+                            ? null : "related data getter shape mismatch";
                 case TargetResolver.KEY_SAME_TOPIC_FEED:
                     return isSameTopicTemplatePredicate(method)
                             ? null : "same topic template predicate shape mismatch";
@@ -148,6 +151,16 @@ final class TargetVerifier {
             return isReplyHolderClass(type);
         }
         return false;
+    }
+
+    static boolean isRelatedDataGetter(Method method) {
+        return "getRelatedData".equals(method.getName())
+                && method.getParameterTypes().length == 0
+                && method.getReturnType() == List.class
+                && !Modifier.isStatic(method.getModifiers())
+                && !Modifier.isAbstract(method.getModifiers())
+                && inheritsFrom(method.getDeclaringClass(),
+                "com.coolapk.market.model.Feed");
     }
 
     /** Class-only Reply cache entries must satisfy the same contract as installation. */

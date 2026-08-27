@@ -6,4 +6,9 @@ public final class AutoValueFeed extends Feed {
     public Entity getDetailSponsorCard() {
         return new Entity();
     }
+
+    @Override
+    public java.util.List<Entity> getRelatedData() {
+        return java.util.Collections.singletonList(new Entity());
+    }
 }

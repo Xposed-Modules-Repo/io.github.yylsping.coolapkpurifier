@@ -173,6 +173,28 @@ public final class TargetVerifierTest {
     }
 
     @Test
+    public void concreteRelatedDataGetterIsAcceptedButAbstractAndUnrelatedAreNot() {
+        assertNull(verifyRelatedGetter(AutoValueFeed.class, "getRelatedData"));
+        assertNotNull(verifyRelatedGetter(com.coolapk.market.model.Feed.class,
+                "getRelatedData"));
+        assertNotNull(verifyRelatedGetter(RelatedLookalike.class, "getRelatedData"));
+        assertNotNull(verifyRelatedGetter(AutoValueFeed.class, "getRelationRows"));
+    }
+
+    private String verifyRelatedGetter(Class<?> type, String name) {
+        String descriptor = DescriptorUtils.classDescriptorOf(type);
+        return TargetVerifier.verify(new ResolvedTarget(TargetResolver.KEY_RELATED_DATA,
+                "test", descriptor, descriptor + "->" + name + "()Ljava/util/List;"),
+                getClass().getClassLoader());
+    }
+
+    public static final class RelatedLookalike {
+        public java.util.List<Object> getRelatedData() {
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    @Test
     public void malformedCachedDetailSponsorDescriptorIsRejected() {
         String entityD = "L" + EntityAccessorsTest.Entity.class.getName()
                 .replace('.', '/') + ";";

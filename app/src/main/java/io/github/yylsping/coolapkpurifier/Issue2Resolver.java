@@ -50,8 +50,9 @@ final class Issue2Resolver {
             put(targets, resolveTopicRecommendToggle());
         }
         if (config.isEnabled(PurifierConfig.Feature.RELATED_DATA)) {
-            put(targets, resolveClassTarget(TargetResolver.KEY_RELATED_DATA,
-                    RELATED_HOLDER_CLASS));
+            ResolvedTarget getter = resolveRelatedDataGetter();
+            put(targets, getter != null ? getter : resolveClassTarget(
+                    TargetResolver.KEY_RELATED_DATA, RELATED_HOLDER_CLASS));
         }
         if (config.isEnabled(PurifierConfig.Feature.SAME_TOPIC_FEED)) {
             put(targets, resolveSameTopicTemplatePredicate());
@@ -213,6 +214,30 @@ final class Issue2Resolver {
                 + " descriptors=" + describeMethods(live));
         return live.size() == 1 ? methodTarget(TargetResolver.KEY_DETAIL_SPONSOR,
                 "issue2_detail_model_getter", live.get(0)) : null;
+    }
+
+    private ResolvedTarget resolveRelatedDataGetter() {
+        List<MethodData> live = new ArrayList<>();
+        try {
+            MethodDataList methods = bridge.findMethod(FindMethod.create()
+                    .searchPackages("com.coolapk.market.model")
+                    .matcher(MethodMatcher.create()
+                            .name("getRelatedData", StringMatchType.Equals, false)
+                            .returnType("java.util.List").paramCount(0)));
+            for (MethodData method : methods) {
+                Method reflected = liveMethod(method);
+                if (reflected != null && TargetVerifier.isRelatedDataGetter(reflected)) {
+                    live.add(method);
+                }
+            }
+        } catch (Throwable throwable) {
+            log.info("resolver target=relatedData getterQueryFailed=" + throwable);
+        }
+        log.info("resolver target=relatedData getterCandidates=" + live.size()
+                + " descriptors=" + describeMethods(live));
+        MethodData unique = UniqueTargetSelector.only(live);
+        return unique == null ? null : methodTarget(TargetResolver.KEY_RELATED_DATA,
+                "issue2_related_model_getter", unique);
     }
 
     private ResolvedTarget resolveSameTopicTemplatePredicate() {

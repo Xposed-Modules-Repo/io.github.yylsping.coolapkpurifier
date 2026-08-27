@@ -179,6 +179,27 @@ public final class FeatureTargetReadinessTest {
         return targets;
     }
 
+    @Test
+    public void relatedGetterNeedsBothDescriptorAndCurrentPrimaryHook() throws Exception {
+        PurifierConfig config = configWithDetail(false);
+        config.setEnabled(PurifierConfig.Feature.RELATED_DATA, true);
+        FeatureInstallState state = new FeatureInstallState();
+        state.beginGeneration(1);
+        Map<String, ResolvedTarget> targets = new LinkedHashMap<>();
+        String descriptor = DescriptorUtils.classDescriptorOf(
+                com.coolapk.market.model.AutoValueFeed.class);
+        targets.put(TargetResolver.KEY_RELATED_DATA, new ResolvedTarget(
+                TargetResolver.KEY_RELATED_DATA, "model", descriptor,
+                descriptor + "->getRelatedData()Ljava/util/List;"));
+        assertTrue(FeatureTargetReadiness.missing(config, 16, targets, state).stream()
+                .anyMatch(value -> value.startsWith(TargetResolver.KEY_RELATED_DATA)));
+        state.markPrimaryHook(1, TargetResolver.KEY_RELATED_DATA);
+        assertTrue(FeatureTargetReadiness.missing(config, 16, targets, state).isEmpty());
+        state.beginGeneration(2);
+        assertTrue(FeatureTargetReadiness.missing(config, 16, targets, state).stream()
+                .anyMatch(value -> value.startsWith(TargetResolver.KEY_RELATED_DATA)));
+    }
+
     private PurifierConfig configWithDetail(boolean enabled) throws Exception {
         PurifierConfig config = new PurifierConfig(folder.newFolder(),
                 (temp, destination) -> {
