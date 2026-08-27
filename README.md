@@ -2,21 +2,23 @@
 
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
 
+当前本地开发代码包含 Issue #5 的 Mode A-ZF 整改，尚未发布：正常 READY 清理完成后不保留 framework Hook。验收范围、测试包哈希及已知限制见 [整改报告](issue5_mode_a_zf_refactor_report.md)。这项工程验收不代表已证明服务端风控问题消失。
+
 ## 功能
 
 - 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。
 - 默认去除启动/开屏广告和全屏广告。
 - 默认去除首页信息流广告与赞助卡片。
-- 默认去除帖子回复区及评论中的赞助内容。
+- 默认启用帖子回复区及评论赞助过滤；当前酷安 16.6.1 的专用 Reply Holder 无法通过运行时 loader 加载，该专用 Hook 尚不可用，不应将 READY 视为它已生效。
 - 可选去除自动评论提示、话题与机型推荐、帖子相关推荐、同话题动态和帖子内推广；酷安 15.x 以下自动禁用这些新选项。
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
-- 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤与布局回退共享的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。
+- 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。Mode A 已移除 `LayoutInflater.inflate` / `View.setTag` 布局回退。
 - 配置变更后于下次启动仅解析尚未缓存的已选目标，并分别提示首次适配与适配完成状态。
-- 增量覆盖酷安 15/16 的 `FullScreenAdUtils.shouldShowAd` 决策链，保留旧版 Activity 级开屏兜底。开屏净化已在酷安 16.5.1 (2607271) 与 16.6.1 各完成 20 次冷启动回归：未复现开屏广告、闪现或崩溃；16.5.1 上决策目标经语义指纹解析到与 16.6.1 不同的混淆名（`rc5.Ԯ` / `kc5.Ԯ`）仍稳定命中，拦截均由决策层前置完成，Activity 级兜底在正式回归中未被动用。
-- 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；对已实机验证的设置页、ViewHolder、资源与布局使用语义定位或受控 fallback，并仅按启动时启用项安装相应的高成本兜底 Hook。
+- 开屏净化使用已解析的 Splash Activity 展示边界，不再 Hook `FullScreenAdUtils.shouldShowAd`。Instrumentation 仅用于启动期及 DEGRADED 兜底，正常 READY 后解除。当前 16.6.1 实测专用目标为 `SplashAdActivity.onCreate`，其他未解析的历史 Splash 类不承诺有 READY 后兜底覆盖；旧决策层版本的冷启动结果不能直接代替本次整改验收。
+- 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；设置入口使用 Android `ActivityLifecycleCallbacks`，ViewHolder 使用受控语义定位。临时 ClassLoader discovery 按需安装，并在终态退休。
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；build cache 只保存 descriptor 元数据，live target 只在当前 ClassLoader generation 内验证、累积和安装。
-- 多目标覆盖：开屏类 Activity（品牌开屏与广告开屏）全部解析并安装 Hook；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中全部 `(List, boolean) -> List` 业务入口（2.0.1 覆盖广度）。
+- 多目标覆盖：对本轮成功解析并验证的开屏 Activity 逐一安装 Hook，不把未解析的历史类名算作专用覆盖；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中发现的 `(List, boolean) -> List` 业务入口。
 - 两层就绪判定：核心过滤可用（开屏 + 至少一个 Feed Hook + getter 完整）与 Feed 覆盖收敛（两个历史锚点类本轮发现的全部 feed 方法均已 Hook，或 20s deadline 兜底收敛）同时满足才进入 READY；覆盖未收敛期间临时保留单发 ClassLoader 观察器，并由运行时事件与一次性 8s watchdog 提供有界重扫，在 20s deadline 前完成确定性收敛，形成确定性重试路径。
 - 会话触发合并：解析会话运行期间到来的 runtime-dex / watchdog 触发不会丢失，合并为恰好一轮后续会话；READY/DEGRADED 为真正冻结终态，迟到的后台会话无法翻转。终态先逻辑停用全局 loadClass discovery Hook，再尝试 framework unhook；正常路径完全解除，解除失败时残留 Hook 为 inert。
 - Resolver 事务隔离：每个 session 在启动时固定捕获 generation + ClassLoader，并独占其 DexKitBridge；loader 中途切换只将旧 session 标记为 superseded，不跨线程关闭 bridge。旧结果不得 apply、写 cache、进入 READY/DEGRADED，bridge 只由所属 worker 退出时关闭。
@@ -25,7 +27,8 @@
 - 解析失败可重试：失败会话会重装 ClassLoader 观察器，下一 session 使用新建的 DexKitBridge 重扫，覆盖加固应用在同一 ClassLoader 上分阶段追加 DEX 的时序。
 - 多版本持久缓存（schema 2）：stableTargetIdentity 包含包名、目标 `versionCode`、base APK 文件名与大小、稳定排序后的 split APK 文件名与大小，以及通过 `GET_SIGNING_CERTIFICATES` 读取的当前 signer 证书 DER 摘要；证书不可用会明确记录为 unavailable，不冒充真实摘要；最多保存 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入；多目标条目按方法/类 descriptor 稳定编号，跨会话合并不丢目标。
 - 同版本覆盖重装后 identity 不变，直接命中历史缓存；升级/降级到新版本后自动失效重扫。
-- Bootstrap 终态低开销：READY/DEGRADED 后先逻辑停用 discovery Hook，再关闭 Resolver worker、RuntimeDexObserver、watchdog，并尝试卸载临时 Feature ClassLoader Hook；仍在运行的 session 由所属 worker 安全关闭 bridge。cleanup 区分本次/累计 unhook 成功与失败、framework active、logical enabled；部分 unhook 后按 HookSite 只补缺失 overload。正常路径下 Hook 被解除；解除失败时保留句柄但 interceptor 已 inert，不再扫描、安装或改变 readiness。Instrumentation 开屏兜底转为被动模式常驻（仅保留开屏判定，2.0.1 行为）。
+- Bootstrap 终态低开销：READY/DEGRADED 后先逻辑停用 discovery Hook，再关闭 Resolver worker、RuntimeDexObserver、watchdog，并卸载临时 Feature ClassLoader Hook；仍在运行的 session 由所属 worker 安全关闭 bridge。Application.attach 仅在交接条件满足后退休，终态清理补偿被取消的退休任务。正常 READY 解除 Instrumentation；DEGRADED 保留必要兜底。解除失败保留句柄并由 HookLedger 如实报告，不能算作“零 framework Hook”。
+- Reply discovery 优先尝试已有缓存，READY 后仅用有限次数的 `Class.forName` 重试及节流的生命周期回调，不重新安装 framework Hook。16.6.1 当前只命中核心目标缓存，不能将 `featureLazyInstalled=0` 当作 Reply 目标命中缓存的证据。
 - post-READY loader swap 采用低开销边界：generation-aware adaptation 只覆盖 bootstrap/adaptation window；进入 READY/DEGRADED 后不保留常驻 loader monitor。若宿主在终态后替换核心业务 loader，需要正常重启酷安进程以开启新 adaptation window。
 - 无缓存首次适配时按“默认三项”或“用户新增选项”分别显示一次系统 Toast；适配完成后再提示一次，缓存命中时不重复提示。
 - 不包含联网、更新器、后台服务或周期性轮询。
