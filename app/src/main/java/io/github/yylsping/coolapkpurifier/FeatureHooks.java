@@ -227,6 +227,25 @@ final class FeatureHooks {
         return installState.hasFallbackHook(KEY_REPLY_HOLDER);
     }
 
+    /**
+     * Mode A-ZF hook-free reply discovery: after READY the temporary
+     * loadClass hooks are gone, so a plain Class.forName retry installs the
+     * holder once the protected shell has appended its dex chunk. Returns
+     * true when this call newly installed (and persisted) the holder.
+     */
+    synchronized boolean tryDirectReplyInstall() {
+        if (!plan.resolveReplyHolder || isReplyHolderInstalled()) {
+            return false;
+        }
+        ClassLoader loader = activeLoader;
+        if (loader == null) {
+            return false;
+        }
+        boolean before = isReplyHolderInstalled();
+        installSemanticIfLoadable(loader, REPLY_HOLDER_CLASS);
+        return !before && isReplyHolderInstalled();
+    }
+
     /** Hooks semantic business classes as protected Coolapk appends their dex. */
     synchronized void installLazyResolvers() {
         if (lazyDiscoveryPermanentlyDisabled

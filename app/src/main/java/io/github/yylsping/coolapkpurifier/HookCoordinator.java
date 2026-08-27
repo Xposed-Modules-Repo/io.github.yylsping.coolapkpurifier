@@ -5,6 +5,7 @@ import android.app.Application;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.SystemClock;
 
@@ -75,6 +76,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final SessionScheduler sessionScheduler = new SessionScheduler();
     private final AtomicBoolean bootstrapRetired = new AtomicBoolean();
     private final AtomicBoolean attachHookRetired = new AtomicBoolean();
+    /** Dedicated retry lane: mainHandler is drained by terminal cleanup. */
+    private volatile HandlerThread replyRetryThread;
+    private volatile Handler replyRetryHandler;
+    private int replyRetryAttempt;
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
     private final OnceFlag terminalCleaned = new OnceFlag();
@@ -1124,6 +1129,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private void completeReady(TerminalSnapshot snapshot, String coverageSource) {
         recordTerminalSnapshot(snapshot);
         cleanupTerminal(snapshot);
+        scheduleReplyDiscoveryRetry();
         if (firstAdaptationToast.hasStarted() && config != null) {
             boolean persisted = config.markAdapted();
             firstAdaptationToast.showCompletionOnce(appContext);
@@ -1340,8 +1346,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
      * Mode A-ZF Phase 3 persistence: a lazily discovered semantic class (the
      * reply holder) becomes a cached class-only target so the NEXT process
      * installs it directly and never needs the loadClass hooks. Runs off the
-     * interceptor thread; a rejected dispatch (terminal worker shutdown) only
-     * skips persistence for this process.
+     * interceptor thread; when the resolver worker is already shut down
+     * (post-READY retry lane) the same thread persists inline.
      */
     private void onSemanticClassDiscovered(String cacheKey, String classDescriptor,
                                            ClassLoader loader, long generation) {
@@ -1351,36 +1357,114 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             log.info("semantic persist skipped reason=stateMissing key=" + cacheKey);
             return;
         }
-        try {
-            worker.execute(() -> {
-                try {
-                    ResolvedTarget target = new ResolvedTarget(
-                            cacheKey, "lazy_semantic_class", classDescriptor, "");
-                    String problem = TargetVerifier.verify(target, loader);
-                    if (problem != null) {
-                        log.info("semantic persist rejected key=" + cacheKey
-                                + " reason=" + problem);
-                        return;
-                    }
-                    ResolutionCache.CachedResolution current =
-                            persistCache.loadResolution(persistIdentity);
-                    Map<String, ResolvedTarget> merged =
-                            new LinkedHashMap<>(current.targets);
-                    merged.put(cacheKey, target);
-                    generationTargets.merge(
-                            runtimeEpoch.generation(),
-                            java.util.Collections.singletonMap(cacheKey, target));
-                    persistCache.saveTargets(persistIdentity, merged,
-                            current.coverageSettled);
-                    log.info("semantic target persisted key=" + cacheKey
-                            + " totalEntries=" + merged.size());
-                } catch (Throwable throwable) {
-                    log.error("semantic persist failed key=" + cacheKey, throwable);
+        Runnable persist = () -> {
+            try {
+                ResolvedTarget target = new ResolvedTarget(
+                        cacheKey, "lazy_semantic_class", classDescriptor, "");
+                String problem = TargetVerifier.verify(target, loader);
+                if (problem != null) {
+                    log.info("semantic persist rejected key=" + cacheKey
+                            + " reason=" + problem);
+                    return;
                 }
-            });
+                ResolutionCache.CachedResolution current =
+                        persistCache.loadResolution(persistIdentity);
+                Map<String, ResolvedTarget> merged =
+                        new LinkedHashMap<>(current.targets);
+                merged.put(cacheKey, target);
+                generationTargets.merge(
+                        runtimeEpoch.generation(),
+                        java.util.Collections.singletonMap(cacheKey, target));
+                persistCache.saveTargets(persistIdentity, merged,
+                        current.coverageSettled);
+                log.info("semantic target persisted key=" + cacheKey
+                        + " totalEntries=" + merged.size());
+            } catch (Throwable throwable) {
+                log.error("semantic persist failed key=" + cacheKey, throwable);
+            }
+        };
+        try {
+            worker.execute(persist);
         } catch (java.util.concurrent.RejectedExecutionException rejected) {
-            log.info("semantic persist skipped reason=workerShutdown key=" + cacheKey);
+            persist.run();
         }
+    }
+
+    /**
+     * Mode A-ZF hook-free post-READY reply discovery: the temporary
+     * loadClass hooks are retired at READY, so bounded plain Class.forName
+     * retries on a dedicated thread install the holder once its dex chunk is
+     * appended and persist it for the next (fully cached, zero-framework)
+     * startup. No framework hook is involved at any point.
+     */
+    private void scheduleReplyDiscoveryRetry() {
+        FeatureHooks hooks = featureHooks;
+        if (hooks == null || !hooks.isReplyHolderSelected()) {
+            return;
+        }
+        Handler handler = replyRetryHandler;
+        if (handler == null) {
+            synchronized (this) {
+                if (replyRetryHandler == null) {
+                    HandlerThread thread = new HandlerThread("pool-reply-retry");
+                    thread.start();
+                    replyRetryThread = thread;
+                    replyRetryHandler = new Handler(thread.getLooper());
+                }
+                handler = replyRetryHandler;
+            }
+        }
+        if (!ReplyDiscoveryRetryPolicy.shouldRetry(
+                hooks.isReplyHolderSelected(), hooks.isReplyHolderInstalled(),
+                replyRetryAttempt)) {
+            quitReplyRetryThread("alreadyInstalled");
+            return;
+        }
+        long delay = ReplyDiscoveryRetryPolicy.delayFor(replyRetryAttempt);
+        handler.postDelayed(this::runReplyDiscoveryRetry, delay);
+        log.info("reply retry scheduled attempt=" + (replyRetryAttempt + 1)
+                + " delayMs=" + delay);
+    }
+
+    private void runReplyDiscoveryRetry() {
+        FeatureHooks hooks = featureHooks;
+        if (hooks == null || state != BootstrapState.READY) {
+            quitReplyRetryThread("stateChanged");
+            return;
+        }
+        boolean installed = false;
+        try {
+            installed = hooks.tryDirectReplyInstall();
+        } catch (Throwable throwable) {
+            log.error("reply retry attempt failed", throwable);
+        }
+        replyRetryAttempt++;
+        if (installed) {
+            log.info("reply retry installed=true attempt=" + replyRetryAttempt);
+            quitReplyRetryThread("installed");
+            return;
+        }
+        if (ReplyDiscoveryRetryPolicy.shouldRetry(
+                hooks.isReplyHolderSelected(), hooks.isReplyHolderInstalled(),
+                replyRetryAttempt)) {
+            long delay = ReplyDiscoveryRetryPolicy.delayFor(replyRetryAttempt);
+            replyRetryHandler.postDelayed(this::runReplyDiscoveryRetry, delay);
+        } else {
+            log.info("reply retry exhausted attempts=" + replyRetryAttempt
+                    + " nextProcess=rediscovery");
+            quitReplyRetryThread("exhausted");
+        }
+    }
+
+    private void quitReplyRetryThread(String reason) {
+        HandlerThread thread = replyRetryThread;
+        if (thread == null) {
+            return;
+        }
+        replyRetryThread = null;
+        replyRetryHandler = null;
+        thread.quitSafely();
+        log.info("reply retry thread quit reason=" + reason);
     }
 
     private void watchdog(String reason) {
