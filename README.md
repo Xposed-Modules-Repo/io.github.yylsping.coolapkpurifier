@@ -2,14 +2,14 @@
 
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
 
-当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF、相关推荐 getter 修复和 Issue #6 native loader 加固，正常 READY 清理完成后不保留 framework Hook。前阶段完成三版本基础回归，剩余功能在 16.6.1 逐项开启、相关推荐修复另经 16.5.1 对照；最终 loader 候选的实机回归范围为 16.6.1。**16.5.1 / 16.6.1 默认开启的 Reply 专用过滤仍为 UNAVAILABLE，当前不生效**。详见 [剩余功能回归](issue5_2.2.1_remaining_feature_regression_report.md)、[Issue #6 验收](issue6_native_loader_reliability_report.md) 和 [发布说明](release-notes-2.2.1.md)。工程验收不代表服务端风控问题消失。
+当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF、相关推荐 getter 修复、Issue #6 native loader 加固，以及 16.x Reply 自绘赞助业务目标恢复。正常 READY 清理完成后不保留 framework Hook。**16.5.1 / 16.6.1 Reply 已为 INSTALLED，但自然赞助实际移除尚未观察到**；15.9.0 旧目标回归通过。详见 [Reply 研究与验收](issue16x_reply_sponsor_research_report.md)、[剩余功能回归](issue5_2.2.1_remaining_feature_regression_report.md)、[Issue #6 验收](issue6_native_loader_reliability_report.md) 和 [发布说明](release-notes-2.2.1.md)。工程验收不代表服务端风控问题消失。
 
 ## 功能
 
 - 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。设置页面每次 resume 在有限窗口内等待视图就绪，成功或 pause/destroy 后停止，修复反复进入时入口缺失的问题。
 - 默认去除启动/开屏广告和全屏广告。
 - 默认去除首页信息流广告与赞助卡片。
-- 默认启用帖子回复区及评论赞助过滤；本轮 15.9.0 的 Reply 目标安装、持久缓存和重启读取通过，16.5.1 / 16.6.1 的专用 Reply Holder 无法通过当前运行时 loader 加载，专用 Hook 为 UNAVAILABLE。设置页和日志独立显示本次启动状态，不应将 core READY 视为所有已选功能生效，也不会自动关闭用户开关。
+- 默认启用帖子回复区及评论赞助过滤；15.9.0 保留旧 holder，16.5.1 / 16.6.1 通过源码语义、评论页注册关系、布局资源与父类抽象绑定契约定位专用自绘 binder，只折叠精确 `feedDetailReplySponsorCard`。两版目标安装及缓存读取通过，关闭开关不安装新 Hook。设置页和日志独立显示状态，INSTALLED 不等于自然阳性效果已经验证，也不会自动关闭用户开关。
 - 可选去除自动评论提示、话题与机型推荐、帖子相关推荐、同话题动态和帖子内推广；酷安 15.x 以下自动禁用这些新选项。
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
 - 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。Mode A 已移除 `LayoutInflater.inflate` / `View.setTag` 布局回退。
@@ -29,7 +29,7 @@
 - 多版本持久缓存（schema 2）：stableTargetIdentity 包含包名、目标 `versionCode`、base APK 文件名与大小、稳定排序后的 split APK 文件名与大小，以及通过 `GET_SIGNING_CERTIFICATES` 读取的当前 signer 证书 DER 摘要；证书不可用会明确记录为 unavailable，不冒充真实摘要；最多保存 5 个历史版本，完整缓存文件不超过 1 MiB，LRU 淘汰，原子替换写入；多目标条目按方法/类 descriptor 稳定编号，跨会话合并不丢目标。
 - 同版本覆盖重装后 identity 不变，直接命中历史缓存；升级/降级到新版本后自动失效重扫。
 - Bootstrap 终态低开销：READY/DEGRADED 后先逻辑停用 discovery Hook，再关闭 Resolver worker、RuntimeDexObserver、watchdog，并卸载临时 Feature ClassLoader Hook；仍在运行的 session 由所属 worker 安全关闭 bridge。Application.attach 仅在交接条件满足后退休，终态清理补偿被取消的退休任务。正常 READY 解除 Instrumentation；DEGRADED 保留必要兜底。解除失败保留句柄并由 HookLedger 如实报告，不能算作“零 framework Hook”。
-- Reply discovery 优先尝试已有缓存，READY 后最多 4 次定时 `Class.forName` 和 3 次 resume 尝试（至少间隔 30s），总预算 120s；任一预算耗尽即注销 observer、取消任务并报告 UNAVAILABLE，不重新安装 framework Hook。两个 16.x 当前只缓存核心目标，不能将 `featureLazyInstalled=0` 当作 Reply 缓存命中的证据。15.9.0 的 class-only Reply 缓存校验已与安装器共享窄范围契约。
+- Reply discovery 优先验证已有缓存；16.x 旧缓存缺少新目标时进入正常有界解析，新 `feature.replySelfDraw` 缓存可直接安装而不扫描 DexKit。15.9.0 class-only 缓存及新 binder 缓存均共享严格安装契约。未安装时仍保留原 READY 后最多 4 次定时 `Class.forName` 和 3 次 resume 尝试（至少间隔 30s）、总预算 120s 的旧类回退；预算耗尽即注销 observer、取消任务并报告 UNAVAILABLE，不重新安装 framework Hook。
 - post-READY loader swap 采用低开销边界：generation-aware adaptation 只覆盖 bootstrap/adaptation window；进入 READY/DEGRADED 后不保留常驻 loader monitor。若宿主在终态后替换核心业务 loader，需要正常重启酷安进程以开启新 adaptation window。
 - 无缓存首次适配时按“默认三项”或“用户新增选项”分别显示一次系统 Toast；适配完成后再提示一次，缓存命中时不重复提示。
 - 不包含联网、更新器、后台服务或周期性轮询。
@@ -42,7 +42,7 @@
 | --- | --- |
 | 目标应用 | 酷安（包名 `com.coolapk.market`），运行时动态适配，不按版本分支 |
 | 2.2.1 默认功能 smoke 已完成 | 15.9.0；专用 Reply sponsor 阳性移除未自然触发，不声明全场景覆盖 |
-| 2.2.1 本轮带限制通过 | 16.5.1 / 16.6.1：核心 READY、零 framework、正常浏览与设置通过；Reply UNAVAILABLE。最终 16.6.1 已完成 hit×2 / miss×1 |
+| 2.2.1 本轮带限制通过 | 16.5.1 / 16.6.1：Reply INSTALLED、核心 READY、零 framework；首次解析及缓存启动通过。16.6.1 正常评论/内联楼中楼与 Reply 关闭通过；自然赞助实际移除未观察到 |
 | 历史曾验证、本轮未重新验证 | 13.1.1 / 16.1.2；本地没有对应 APK |
 | Android | 9（API 28）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
