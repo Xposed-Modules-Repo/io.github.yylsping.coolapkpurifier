@@ -13,13 +13,17 @@ final class LazyDiscoveryPolicy {
 
     /**
      * A cached resolution may drive READY directly (no lazy hooks at all)
-     * only when a selected reply holder is already installed. When it is
-     * selected but missing, the session must fall through to the discovery
-     * path so the temporary hooks get a chance to find it, matching the
-     * pre-refactor discovery window.
+     * when a selected reply holder is either installed or simply absent from
+     * the persisted cache. Blocking is reserved for the case a previous
+     * process PROVED the holder reachable (persisted target) but this boot
+     * has not installed it yet — only then can a discovery session actually
+     * change the outcome. On Coolapk builds whose dex layout never exposes
+     * the holder through the runtime loader (16.6.1 drift), this keeps the
+     * cache-hit fast path fast instead of paying a DexKit rescan every boot.
      */
-    static boolean blocksCacheFastPath(boolean replySelected, boolean replyInstalled) {
-        return replySelected && !replyInstalled;
+    static boolean blocksCacheFastPath(boolean replySelected, boolean replyInstalled,
+                                       boolean cachedHasReplyTarget) {
+        return replySelected && !replyInstalled && cachedHasReplyTarget;
     }
 
     /**

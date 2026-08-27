@@ -8,19 +8,21 @@ import org.junit.Test;
 public class LazyDiscoveryPolicyTest {
 
     @Test
-    public void selectedReplyHolderBlocksCacheFastPathUntilInstalled() {
-        assertTrue(LazyDiscoveryPolicy.blocksCacheFastPath(true, false));
+    public void selectedReplyHolderBlocksOnlyWithPersistedTarget() {
+        assertTrue(LazyDiscoveryPolicy.blocksCacheFastPath(true, false, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, false, false));
     }
 
     @Test
     public void installedReplyHolderAllowsCacheFastPath() {
-        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, true, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, true, false));
     }
 
     @Test
     public void unselectedReplyHolderNeverBlocksCacheFastPath() {
-        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(false, false));
-        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(false, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(false, false, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(false, true, false));
     }
 
     @Test

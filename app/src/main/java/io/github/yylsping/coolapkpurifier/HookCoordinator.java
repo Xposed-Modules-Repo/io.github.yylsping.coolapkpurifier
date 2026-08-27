@@ -81,7 +81,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile HandlerThread replyRetryThread;
     private volatile Handler replyRetryHandler;
     private volatile Application.ActivityLifecycleCallbacks replyRetryLifecycle;
+    private volatile Application replyRetryApplication;
     private int replyRetryAttempt;
+    private volatile long lastReplyUiAttemptElapsed;
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
     private final OnceFlag terminalCleaned = new OnceFlag();
@@ -582,7 +584,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         boolean replyBlocksFastPath = hooksForFastPath != null
                 && LazyDiscoveryPolicy.blocksCacheFastPath(
                         hooksForFastPath.isReplyHolderSelected(),
-                        hooksForFastPath.isReplyHolderInstalled());
+                        hooksForFastPath.isReplyHolderInstalled(),
+                        cachedRes.targets.containsKey(TargetResolver.KEY_REPLY_HOLDER));
         if (config.pendingKind() == PurifierConfig.PendingKind.NONE
                 && !replyBlocksFastPath
                 && isCoreReady() && areSelectedFeaturesReady(sessionContext)
@@ -1420,8 +1423,22 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 handler = replyRetryHandler;
             }
         }
-        if (replyRetryLifecycle == null
-                && appContext instanceof Application) {
+        if (replyRetryLifecycle == null) {
+            // The protected shell can attach more than one Application; the
+            // system dispatches lifecycle callbacks on the CURRENT instance
+            // (same resolution the Settings entry uses), not necessarily the
+            // first one the attach hook observed.
+            Context current = currentApplication();
+            Application application = current instanceof Application
+                    ? (Application) current : null;
+            if (application == null && appContext instanceof Application) {
+                application = (Application) appContext;
+            }
+            if (application == null) {
+                log.info("reply retry lifecycle observer skipped reason=applicationMissing");
+                return;
+            }
+            replyRetryApplication = application;
             replyRetryLifecycle = new Application.ActivityLifecycleCallbacks() {
                 @Override
                 public void onActivityResumed(Activity activity) {
@@ -1453,9 +1470,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 public void onActivityDestroyed(Activity activity) {
                 }
             };
-            ((Application) appContext).registerActivityLifecycleCallbacks(
+            ((Application) application).registerActivityLifecycleCallbacks(
                     replyRetryLifecycle);
-            log.info("reply retry lifecycle observer registered");
+            log.info("reply retry lifecycle observer registered applicationIdentity="
+                    + System.identityHashCode(application));
         }
         if (!ReplyDiscoveryRetryPolicy.shouldRetry(
                 hooks.isReplyHolderSelected(), hooks.isReplyHolderInstalled(),
@@ -1476,6 +1494,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             unregisterReplyRetryLifecycle("inactiveOrDone");
             return;
         }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastReplyUiAttemptElapsed
+                < ReplyDiscoveryRetryPolicy.RESUME_ATTEMPT_MIN_INTERVAL_MILLIS) {
+            return;
+        }
+        lastReplyUiAttemptElapsed = now;
         boolean installed = false;
         try {
             installed = hooks.tryDirectReplyInstall();
@@ -1491,12 +1515,14 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     private void unregisterReplyRetryLifecycle(String reason) {
         Application.ActivityLifecycleCallbacks observer = replyRetryLifecycle;
-        if (observer == null || !(appContext instanceof Application)) {
+        Application application = replyRetryApplication;
+        if (observer == null || application == null) {
             return;
         }
         try {
-            ((Application) appContext).unregisterActivityLifecycleCallbacks(observer);
+            application.unregisterActivityLifecycleCallbacks(observer);
             replyRetryLifecycle = null;
+            replyRetryApplication = null;
             log.info("reply retry lifecycle observer removed reason=" + reason);
         } catch (Throwable throwable) {
             log.error("reply retry lifecycle unregister failed", throwable);

@@ -13,6 +13,9 @@ final class ReplyDiscoveryRetryPolicy {
     /** Bounded retry schedule; quitting after the last attempt. */
     static final long[] RETRY_DELAYS_MILLIS = {2_000L, 8_000L, 20_000L, 60_000L};
 
+    /** Minimum spacing between UI-resume-driven attempts (log/noise bound). */
+    static final long RESUME_ATTEMPT_MIN_INTERVAL_MILLIS = 30_000L;
+
     static boolean shouldRetry(boolean replySelected, boolean replyInstalled,
                                int attemptIndex) {
         return replySelected && !replyInstalled

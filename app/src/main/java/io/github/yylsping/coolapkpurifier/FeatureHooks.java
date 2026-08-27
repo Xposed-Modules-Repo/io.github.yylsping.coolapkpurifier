@@ -242,8 +242,23 @@ final class FeatureHooks {
             return false;
         }
         boolean before = isReplyHolderInstalled();
+        String loadable = "unloaded";
+        String loaderOwner = "n/a";
+        try {
+            Class<?> type = Class.forName(REPLY_HOLDER_CLASS, false, loader);
+            loadable = "loaded";
+            loaderOwner = String.valueOf(System.identityHashCode(
+                    type.getClassLoader()))
+                    + (type.getClassLoader() == loader ? "=active" : "=foreign");
+        } catch (Throwable throwable) {
+            loadable = "unloaded:" + throwable.getClass().getSimpleName();
+        }
         installSemanticIfLoadable(loader, REPLY_HOLDER_CLASS);
-        return !before && isReplyHolderInstalled();
+        boolean installed = !before && isReplyHolderInstalled();
+        log.info("reply direct attempt loadable=" + loadable
+                + " classLoader=" + loaderOwner
+                + " installed=" + installed);
+        return installed;
     }
 
     /** Hooks semantic business classes as protected Coolapk appends their dex. */
