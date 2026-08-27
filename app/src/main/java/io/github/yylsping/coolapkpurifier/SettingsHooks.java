@@ -38,7 +38,7 @@ final class SettingsHooks {
     private final int coolapkMajor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final PageStateRegistry<Activity, PageState> injected = new PageStateRegistry<>();
-    private boolean lifecycleCallbacksInstalled;
+    private volatile boolean lifecycleCallbacksInstalled;
 
     SettingsHooks(ModuleLog log, PurifierConfig config,
                   int coolapkMajor) {

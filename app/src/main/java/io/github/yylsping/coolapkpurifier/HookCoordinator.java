@@ -216,11 +216,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
      * currently executing this handoff.
      */
     private void maybeRetireApplicationAttach() {
-        SettingsHooks settings = settingsHooks;
-        AttachHandoffPolicy.HandoffState handoff = new AttachHandoffPolicy.HandoffState(
-                appContext != null,
-                config != null,
-                settings != null && settings.isLifecycleCallbacksInstalled());
+        AttachHandoffPolicy.HandoffState handoff = attachHandoffState();
         if (!AttachHandoffPolicy.canRetireAttach(handoff)) {
             String missing = AttachHandoffPolicy.missingCondition(handoff);
             log.info("attach hook retained reason=" + missing);
@@ -233,13 +229,32 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         mainHandler.post(() -> retireApplicationAttachNow("handoffComplete"));
     }
 
+    private AttachHandoffPolicy.HandoffState attachHandoffState() {
+        SettingsHooks settings = settingsHooks;
+        return new AttachHandoffPolicy.HandoffState(appContext != null,
+                config != null,
+                settings != null && settings.isLifecycleCallbacksInstalled());
+    }
+
     /**
      * Idempotent unhook of the bootstrap attach handle. The handoff posts it
      * to the main looper, but terminal cleanup drains mainHandler — on a
      * cache-hit boot READY can beat the posted message — so cleanupTerminal
      * also invokes this directly. The second invocation is a no-op.
      */
-    private void retireApplicationAttachNow(String reason) {
+    private synchronized void retireApplicationAttachNow(String reason) {
+        // Terminal cleanup is a second execution path, not permission to
+        // bypass a failed handoff. Do not consume the one-shot on deferral.
+        AttachHandoffPolicy.HandoffState handoff = attachHandoffState();
+        if (!AttachHandoffPolicy.canRetireAttach(handoff)) {
+            String missing = AttachHandoffPolicy.missingCondition(handoff);
+            log.info("attach hook retained reason=" + missing + " trigger=" + reason);
+            traceAfterContext("attachRetireDeferred", "reason=" + missing
+                    + " trigger=" + reason);
+            return;
+        }
+        // Serialize with a posted retirement already in progress so the
+        // terminal ledger cannot overtake its unhook/ledger publication.
         if (!attachUnhookExecuted.compareAndSet(false, true)) {
             return;
         }
@@ -264,10 +279,11 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             hookLedger.retire("application-attach", reason
                     + " unhooked=" + unhooked);
         }
-        log.info("coordinator attachHookRetired=true reason=" + reason
+        boolean retired = retained.isEmpty();
+        log.info("coordinator attachHookRetired=" + retired + " reason=" + reason
                 + " unhooked=" + unhooked + " failed=" + failed
                 + " remaining=" + retained.size());
-        traceAfterContext("attachHookRetired", "reason=" + reason
+        traceAfterContext(retired ? "attachHookRetired" : "attachRetireFailed", "reason=" + reason
                 + " failed=" + failed);
     }
 
@@ -1179,8 +1195,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     /**
      * Per legacy splash name: whether a specific hook covers it, or only the
-     * always-on passive Instrumentation gate does. Log-only diagnostic that
-     * separates "specific installed" from "safely covered by fallback".
+     * retained passive Instrumentation gate does. Never claim passive
+     * coverage after the framework safety gate has actually been unhooked.
      */
     private String splashLegacyCoverageSummary() {
         StringBuilder sb = new StringBuilder();
@@ -1191,7 +1207,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             int lastDot = name.lastIndexOf('.');
             sb.append(lastDot < 0 ? name : name.substring(lastDot + 1)).append('=')
                     .append(featureInstallState.hasSplashClass(name)
-                            ? "specific" : "passive");
+                            ? "specific" : splashHooks.isInstrumentationSafetyActive()
+                                    ? "passive" : "uncovered");
         }
         return sb.toString();
     }
@@ -1225,8 +1242,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     "state=" + state + " bootstrapRetired=true traceFrozen=true"
                             + " elapsedMs=" + current.elapsedSinceStart());
         }
-        // Passive mode: coordinator callbacks stop, but the Instrumentation
-        // splash safety net itself is retained for the process lifetime.
+        // Coordinator callbacks stop. Instrumentation was already unhooked
+        // on READY; only a retained DEGRADED safety gate stays passive.
         splashHooks.retireBootstrapCallbacks();
         log.info("coordinator bootstrapRetired=true state=" + state
                 + " traceFrozen=" + (current != null && current.isFrozen()));

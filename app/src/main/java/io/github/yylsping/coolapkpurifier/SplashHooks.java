@@ -152,7 +152,8 @@ final class SplashHooks {
      */
     synchronized void retireBootstrapCallbacks() {
         bootstrapCallbacksActive = false;
-        log.info("instrumentation bootstrap callbacks retired hooksRetained=true");
+        log.info("instrumentation bootstrap callbacks retired hooksRetained="
+                + !bootstrapHandles.isEmpty());
     }
 
     synchronized boolean installSpecific(Class<?> splashBase) {
