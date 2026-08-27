@@ -39,6 +39,7 @@ final class SettingsHooks {
     private final FeatureRuntimeHealth runtimeHealth;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final PageStateRegistry<Activity, PageState> injected = new PageStateRegistry<>();
+    private final PageInjectionRetry<Activity> injectionRetry;
     private volatile boolean lifecycleCallbacksInstalled;
 
     SettingsHooks(ModuleLog log, PurifierConfig config,
@@ -52,6 +53,11 @@ final class SettingsHooks {
         this.config = config;
         this.coolapkMajor = coolapkMajor;
         this.runtimeHealth = runtimeHealth;
+        this.injectionRetry = new PageInjectionRetry<>(
+                (task, delay) -> mainHandler.postDelayed(task, delay),
+                mainHandler::removeCallbacks, this::maybeInject,
+                activity -> log.info("settings injection retry exhausted activity="
+                        + activity.getClass().getName()));
     }
 
     void install(Context context) {
@@ -80,11 +86,15 @@ final class SettingsHooks {
 
                         @Override
                         public void onActivityResumed(Activity activity) {
-                            mainHandler.post(() -> maybeInject(activity));
+                            if (activity != null
+                                    && SIMPLE_ACTIVITY.equals(activity.getClass().getName())) {
+                                injectionRetry.start(activity);
+                            }
                         }
 
                         @Override
                         public void onActivityPaused(Activity activity) {
+                            injectionRetry.cancel(activity);
                         }
 
                         @Override
@@ -113,17 +123,18 @@ final class SettingsHooks {
         return lifecycleCallbacksInstalled;
     }
 
-    private void maybeInject(Activity activity) {
+    /** True stops the retry; false means the host view tree is not ready yet. */
+    private boolean maybeInject(Activity activity) {
         try {
             if (activity == null || activity.isFinishing() || activity.isDestroyed()
                     || !SIMPLE_ACTIVITY.equals(activity.getClass().getName())
                     || injected.contains(activity)) {
-                return;
+                return true;
             }
             View decor = activity.getWindow().getDecorView();
             TextView toolbarTitle = findTextView(decor, "设置");
             if (toolbarTitle == null) {
-                return;
+                return false;
             }
             Resources resources = activity.getResources();
             int contentId = resources.getIdentifier(
@@ -131,13 +142,13 @@ final class SettingsHooks {
             View content = contentId == 0 ? null : activity.findViewById(contentId);
             if (!(content instanceof FrameLayout)) {
                 log.info("settings injection skipped reason=contentViewNotFrame");
-                return;
+                return false;
             }
             FrameLayout frame = (FrameLayout) content;
             View compose = findByClassName(frame, "androidx.compose.ui.platform.ComposeView");
             if (compose == null || !(compose.getLayoutParams() instanceof FrameLayout.LayoutParams)) {
                 log.info("settings injection skipped reason=composeViewMissing");
-                return;
+                return false;
             }
 
             FrameLayout.LayoutParams original =
@@ -160,8 +171,10 @@ final class SettingsHooks {
             injected.put(activity, state);
             log.info("settings entry injected top=" + entryParams.topMargin
                     + " composeShift=" + shift + " coolapkMajor=" + coolapkMajor);
+            return true;
         } catch (Throwable throwable) {
             log.error("settings injection skipped; core purifier unaffected", throwable);
+            return true;
         }
     }
 
@@ -273,6 +286,7 @@ final class SettingsHooks {
     }
 
     private void onActivityDestroyed(Activity activity) {
+        injectionRetry.cancel(activity);
         PageState state = injected.remove(activity);
         if (state == null) {
             return;
