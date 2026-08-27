@@ -326,6 +326,18 @@ native LSPosed/Zygisk/ART/root/风险应用探针
 - **【本轮最重要修正】本设备应用列表通道实测关闭**：root 见 111 个第三方包（含全部 6 个 yylsping 模块）；酷安 uid(10400) 仅见 1 个（自己）。系统级：QUERY_ALL_PACKAGES=granted 但 ColorOS GET_INSTALLED_APPS=denied + AppOps ignore（USER_FIXED）。三信号一致 → **NetHT pm list collector 在本设备只枚举到宿主自己 → field 12 不含本模块**。风险模型修正：本设备活跃输入面 = LSPosed/Zygisk/ART/root + nuid；"应用列表上传模块包名"降级为"其它 ROM/授权设备才可能"；ROM 权限差异可解释用户反馈分歧。
 - IDB 追加 11 个 rename + 注释并保存；未 patch 字节。
 
+### 1.18 【2026-08-27 第四会话】Full-P4B 阶段：E1/E2/E5 完成（跨版本 diff / 通用卡片模型 / 探针门控矩阵）
+
+完整输出：`issue5_full_p4b_session_report.md`（总报告）、`issue5_cross_version_security_diff.md`（P4B）、`issue5_p5_generic_card_model.md`（P5）。核心结论：
+
+- **【E5/P4B】** 三版本工件：`libNetHTProtect.so` **16.5.1 与 16.6.1 逐字节相同**；15.9.0 不同构建。`(15.9.0, 16.5.1]` 新增：pm collector `-3` 第三方范围化、LSPosed maps 内容搜索（15.9.0 只有 `/sbin/.magisk/modules/zygisk_lsposed`/`taichi` 路径法）、`inline-max-code-units=0` ART 探针、filePermisson、changedPackages、shizuku、frida 字符串、+16B config 字段。**既有（≤15.9.0）**：zygisk ptrace、fdinfo/mnt_id、smaps、magisk 路径表、模拟器、Java 侧 DDI/PostToken/nuid/Shuzilm 全链（壳内字符串池三版可读）。Config 默认值共有字段逐值不变。判定：CLIENT_CAPABILITY_CHANGED（区间内）+ CLIENT_UNCHANGED_SERVER_MORE_LIKELY（16.5.1→16.6.1 增量）+ MIXED。
+- **【新归属】`libmetasec_ml.so` = 穿山甲(Pangle)广告 SDK 动态下发组件**（`files/pangle_p/com.byted.live.lite/version-211448/lib/`），root/Magisk 检测链与酷安 APK 版本解耦（三版 APK 均不含）——根因模型新增独立变量。
+- **【E1】探针门控矩阵（E3）**：LSPosed=cfg[808]、mnt=cfg[809]、smaps=cfg[821]、zygisk=cfg[825]、filepermisson=cfg[840]，**构造器默认全部清零（OFF）**；调度器 sub_2483A8 由一次性注册（sub_242628）挂入 SDK 回调表，前置 `netht_linker_level_check`（linker 级别∉{3,4,5}）。JNI 命令分发器存在索引式 `[X9,X8]` 字节写入 → 私有通道**可**远程翻转门；运行值 UNKNOWN。字面偏移写门者全库仅构造器（0x197454/0x22E41C/0x1C8A84 同偏移写入已逐一排除为栈缓冲/导入表误报）。→ "服务端 rollout"假设获得机制级支撑：**探针开关是服务端可翻转的位，客户端升级只是提供更多可开关的探针**。
+- **【E2/P5】Generic Card Model = S2**：通用 `card` 模板（EntityCard → `viewholder/ޕ`）把服务端 title 渲染进 TextView + 嵌套实体 + 服务端样式键（cardContainerPadding*）；`configCard` 实体被转成页面配置直接应用；textCard/textLinkCard 模板族在模型层存在。风险行若存在，最低成本路径=服务端插普通 card 行，客户端零配合代码。
+- **【E4 边界】** 事件队列与 field 12 在同一次 aebd(eventType=6) build 序列化（E3 链路）；但探针是否实际产出事件取决于门运行值（默认 OFF，UNKNOWN）→ 本设备 nuid 携带环境信号的现实概率 = f(服务端开关)，非客户端版本本身。
+- 模块决策：**KEEP MODE A FROZEN**（无新直接边）。IDB 已追加探针 rename+门控注释并保存（`netht_probe_lsposed_maps` 等 8 个）。
+- 方法学（可复用）：栈字符串重建器 `.tmp_audit/stackstr.py`（NetHT 全部安全字符串=栈上 mov+strb 构造+算术解码，密钥字典：sub 0xb/0xa/0x9/0x5/0x2、xor 0x32/0x28/0x0f/0x3d/0x0c/0x77 等）。
+
 ### 1.16 【2026-08-26 夜间会话】Priority 1/2/3 闭合：installedApk 谓词 + field 12 结构 + aebd→X-App-Device（全 E3）
 
 完整报告见 `issue5_p1p2_predicate_report.md`。核心结论：
