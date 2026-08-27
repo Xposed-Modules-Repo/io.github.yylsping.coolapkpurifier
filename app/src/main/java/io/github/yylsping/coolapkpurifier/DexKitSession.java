@@ -36,11 +36,12 @@ final class DexKitSession {
     private int bridgeGeneration = -1;
     private int rebuildCount;
     private long loaderIdentity = -1L;
+    private DexKitNativeLoader.LoadFailure nativeFailure;
 
     DexKitSession(ModuleLog log, BootstrapTrace trace, ClassLoader loader,
                   Context appContext) {
         this(log, trace, loader, appContext,
-                DexKitNativeLoader::ensureLoaded,
+                context -> DexKitNativeLoader.ensureLoaded(context, log, trace),
                 candidateLoader -> DexKitBridge.create(candidateLoader, true));
     }
 
@@ -75,6 +76,9 @@ final class DexKitSession {
 
     DexKitBridge ensureBridge(String trigger) {
         synchronized (lock) {
+            if (nativeFailure != null) {
+                throw nativeFailure;
+            }
             long loaderId = System.identityHashCode(loader);
             if (bridge != null && bridge.isValid()
                     && bridgeGeneration == generation.get()
@@ -102,7 +106,16 @@ final class DexKitSession {
                             + " reason=applicationContextUnavailable");
                     return null;
                 }
-                nativeLibraryLoader.ensureLoaded(appContext);
+                try {
+                    nativeLibraryLoader.ensureLoaded(appContext);
+                } catch (Exception | LinkageError failure) {
+                    nativeFailure = failure instanceof DexKitNativeLoader.LoadFailure
+                            ? (DexKitNativeLoader.LoadFailure) failure
+                            : new DexKitNativeLoader.LoadFailure("nativeLibraryLoader", failure);
+                    trace("nativeBootstrapFailed", nativeFailure.getMessage());
+                    log.error("resolver NATIVE_BOOTSTRAP_FAILED", nativeFailure);
+                    throw nativeFailure;
+                }
                 trace("bridgeCreateStart", "trigger=" + trigger
                         + " generation=" + bridgeGeneration
                         + " loaderIdentity=" + loaderIdentity);
@@ -127,6 +140,8 @@ final class DexKitSession {
                             + " rebuild=" + rebuildCount);
                 }
                 return bridge.isValid() ? bridge : null;
+            } catch (DexKitNativeLoader.LoadFailure failure) {
+                throw failure;
             } catch (Throwable throwable) {
                 trace("bridgeCreateEnd", "trigger=" + trigger + " failed=" + throwable);
                 log.error("resolver dexkit bridge creation failed trigger=" + trigger, throwable);

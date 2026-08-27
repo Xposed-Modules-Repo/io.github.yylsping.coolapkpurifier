@@ -27,6 +27,8 @@ public final class CoolapkModule extends XposedModule {
 
         ModuleLog log = new ModuleLog(this);
         try {
+            DexKitNativeLoader.configure(() -> DexKitNativeLoader.Location.fromFramework(
+                    getModuleApplicationInfo(), BuildConfig.VERSION_CODE));
             HookCoordinator created = new HookCoordinator(this, log, param.getClassLoader());
             created.install();
             coordinator = created;

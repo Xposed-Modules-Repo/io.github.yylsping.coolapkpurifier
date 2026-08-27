@@ -40,7 +40,9 @@ final class TerminalSnapshot {
                 + " terminal=" + terminalState
                 + " coreReady=" + coreReady
                 + " missingRequired=" + missingRequired
-                + " source=" + source;
+                + " source=" + source
+                + (DexKitNativeLoader.FAILURE_REASON.equals(source)
+                        ? " degradedReason=" + source : "");
     }
 
     private static List<String> immutableCopy(List<String> values) {

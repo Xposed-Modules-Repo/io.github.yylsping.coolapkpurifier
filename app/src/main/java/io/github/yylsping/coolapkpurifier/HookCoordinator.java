@@ -520,6 +520,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                         discardStaleSession(sessionContext, trigger, attempt,
                                 "exceptionAfterSupersede:" + throwable.getClass().getName());
                     } else {
+                        String failureReason = sessionFailureReason(throwable);
                         log.error("coordinator resolution session failed", throwable);
                         traceAfterContext("sessionError", "trigger=" + trigger
                                 + " error=" + throwable
@@ -527,12 +528,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                         TerminalTransaction.Result terminal = commitSessionTerminal(
                                 sessionContext,
                                 TerminalTransaction.Intent.FORCE_DEGRADED,
-                                "sessionError:" + throwable.getClass().getName());
+                                failureReason);
                         if (!terminal.sessionCurrent) {
                             discardStaleSession(sessionContext, trigger, attempt,
                                     "errorTerminalCommitAfterSupersede");
                         } else if (terminal.snapshot != null) {
-                            completeDegraded(terminal.snapshot, "sessionError");
+                            completeDegraded(terminal.snapshot, failureReason);
                         }
                     }
                 } finally {
@@ -558,6 +559,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             sessionScheduler.onFinished(true, (nextTrigger, nextFollowUp) -> {
             });
         }
+    }
+
+    static String sessionFailureReason(Throwable failure) {
+        return failure instanceof DexKitNativeLoader.LoadFailure
+                ? DexKitNativeLoader.FAILURE_REASON
+                : "sessionError:" + failure.getClass().getName();
     }
 
     private void runSession(ResolutionSessionContext sessionContext,

@@ -66,4 +66,34 @@ public final class DexKitSessionContextTest {
         return new ClassLoader(null) {
         };
     }
+
+    @Test
+    public void nativeFailurePropagatesOnceAndNeverCallsBridgeOrRetries() {
+        java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+        DexKitSession session = new DexKitSession(new ModuleLog(null), null, loader(),
+                new ContextWrapper(null), ignored -> {
+                    attempts.incrementAndGet();
+                    throw new UnsatisfiedLinkError("dlopen namespace failure");
+                }, ignored -> { throw new AssertionError("bridge must not open"); });
+        DexKitNativeLoader.LoadFailure failure = org.junit.Assert.assertThrows(
+                DexKitNativeLoader.LoadFailure.class, () -> session.ensureBridge("native-failure"));
+        assertSame(failure, org.junit.Assert.assertThrows(DexKitNativeLoader.LoadFailure.class,
+                () -> session.ensureBridge("watchdog")));
+        org.junit.Assert.assertEquals(1, attempts.get());
+        org.junit.Assert.assertEquals(DexKitNativeLoader.FAILURE_REASON,
+                HookCoordinator.sessionFailureReason(failure));
+    }
+
+    @Test
+    public void bridgeFailureAfterNativeSuccessIsNotMisclassifiedAsNativeFailure() {
+        java.util.concurrent.atomic.AtomicInteger opens = new java.util.concurrent.atomic.AtomicInteger();
+        DexKitSession session = new DexKitSession(new ModuleLog(null), null, loader(),
+                new ContextWrapper(null), ignored -> {}, ignored -> {
+                    opens.incrementAndGet();
+                    throw new IllegalStateException("bridge unavailable");
+                });
+        assertNull(session.ensureBridge("bridge-error"));
+        assertNull(session.ensureBridge("runtime-change"));
+        org.junit.Assert.assertEquals(2, opens.get());
+    }
 }

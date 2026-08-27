@@ -15,6 +15,25 @@ import org.junit.Test;
 
 public final class TerminalTransactionTest {
     @Test
+    public void nativeFailureCommitsEarlyDegradedWithSpecificReasonAndRejectsLaterReady() {
+        ResolutionEpoch epoch = new ResolutionEpoch(loader());
+        epoch.transition(loader());
+        ResolutionSessionContext context = epoch.capture(1L);
+        TerminalTransaction transaction = new TerminalTransaction(epoch);
+        StateHarness state = new StateHarness();
+        String reason = HookCoordinator.sessionFailureReason(
+                new DexKitNativeLoader.LoadFailure("systemLoad", new UnsatisfiedLinkError("denied")));
+        TerminalTransaction.Result result = transaction.commitSession(context,
+                TerminalTransaction.Intent.FORCE_DEGRADED, reason,
+                (generation, activeLoader) -> readiness(false, "core:feedHook"), state);
+        assertEquals(BootstrapState.DEGRADED, result.snapshot.terminalState);
+        assertTrue(result.snapshot.describe().contains("degradedReason=DEXKIT_NATIVE_LOAD_FAILED"));
+        assertNull(transaction.commitDeadline("deadline",
+                (generation, activeLoader) -> readiness(true, "none"), state).snapshot);
+        assertEquals(BootstrapState.DEGRADED, state.state);
+    }
+
+    @Test
     public void g1ReadyDeadlineCompletesBeforeConcurrentG2Reset() throws Exception {
         ResolutionEpoch epoch = new ResolutionEpoch(loader());
         ClassLoader l1 = loader();
