@@ -129,6 +129,25 @@ public final class ResolutionCacheMigrationTest {
     }
 
     @Test
+    public void modernReplyMethodSurvivesCacheRoundTripWithCoreAndLegacyEntries() throws Exception {
+        File filesDir = folder.newFolder("modernReply");
+        TargetIdentity identity = TargetIdentity.fromJson(new JSONObject(IDENTITY_JSON));
+        Class<?> holder = ReplySelfDrawTargetTest.First.class;
+        ResolvedTarget reply = new ResolvedTarget(TargetResolver.KEY_REPLY_SELF_DRAW,
+                "reply_self_draw_registration_v1", DescriptorUtils.classDescriptorOf(holder),
+                org.luckypray.dexkit.util.DexSignUtil.getDescriptor(holder.getDeclaredMethod("a", Object.class)));
+        Map<String, ResolvedTarget> targets = singleFeedTargets();
+        targets.put(reply.key, reply);
+        new ResolutionCache(filesDir, TEST_REPLACE).saveTargets(identity, targets, true);
+        ResolutionCache.CachedResolution loaded = new ResolutionCache(filesDir, TEST_REPLACE).loadResolution(identity);
+        assertTrue(loaded.coverageSettled);
+        assertEquals(targets.keySet(), loaded.targets.keySet());
+        ResolvedTarget cached = loaded.targets.get(reply.key);
+        assertEquals(reply.methodDescriptor, cached.methodDescriptor);
+        assertNull(TargetVerifier.verify(cached, getClass().getClassLoader()));
+    }
+
+    @Test
     public void entryWithoutSettledFlagFailsClosed() throws Exception {
         File filesDir = folder.newFolder("files2c");
         TargetIdentity identity = TargetIdentity.fromJson(new JSONObject(IDENTITY_JSON));

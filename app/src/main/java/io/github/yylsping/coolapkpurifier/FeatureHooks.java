@@ -115,6 +115,17 @@ final class FeatureHooks {
                     "com.coolapk.market.view.feedv8.component.TopicRecommendKt");
         }
         if (plan.resolveReplyHolder) {
+            ResolvedTarget modern = targets.get(TargetResolver.KEY_REPLY_SELF_DRAW);
+            if (modern != null && TargetVerifier.verify(modern, loader) == null) {
+                try {
+                    Method binder = DescriptorUtils.methodForDescriptor(modern.methodDescriptor, loader);
+                    if (entityListHooks.installReplySelfDraw(binder, loader, expectedGeneration)) {
+                        installState.markPrimaryHook(expectedGeneration, TargetResolver.KEY_REPLY_SELF_DRAW);
+                    }
+                } catch (Throwable failure) {
+                    log.error("reply self-draw installation failed", failure);
+                }
+            }
             // Cache-first (Mode A-ZF Phase 3): a persisted reply holder target
             // installs directly whenever the class is loadable, so the two
             // temporary loadClass hooks are never installed on cache hits.
@@ -221,7 +232,7 @@ final class FeatureHooks {
     /** Whether any selected semantic target is still uninstalled. */
     synchronized boolean hasMissingSemanticTargets(Map<String, ResolvedTarget> targets) {
         boolean replyMissing = plan.resolveReplyHolder
-                && !installState.hasFallbackHook(KEY_REPLY_HOLDER);
+                && !isReplyHolderInstalled();
         return replyMissing
                 || !FeatureTargetReadiness.missing(
                         config, coolapkMajor, targets, installState).isEmpty();
@@ -232,7 +243,8 @@ final class FeatureHooks {
     }
 
     synchronized boolean isReplyHolderInstalled() {
-        return installState.hasFallbackHook(KEY_REPLY_HOLDER);
+        return installState.hasFallbackHook(KEY_REPLY_HOLDER)
+                || installState.hasPrimaryHook(TargetResolver.KEY_REPLY_SELF_DRAW);
     }
 
     /**
@@ -488,7 +500,7 @@ final class FeatureHooks {
     }
 
     private boolean allSemanticTargetsInstalled() {
-        return (!plan.resolveReplyHolder || installState.hasFallbackHook(KEY_REPLY_HOLDER))
+        return (!plan.resolveReplyHolder || isReplyHolderInstalled())
                 && (!plan.resolveAutoComment
                 || installState.hasPrimaryHook(TargetResolver.KEY_AUTO_COMMENT))
                 && (!plan.resolveTopicRecommend

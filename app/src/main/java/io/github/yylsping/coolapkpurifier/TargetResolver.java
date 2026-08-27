@@ -21,6 +21,7 @@ final class TargetResolver {
     static final String KEY_DETAIL_SPONSOR = "feature.detailSponsor";
     /** Class-only target: the reply sponsor holder discovered via lazy class loading. */
     static final String KEY_REPLY_HOLDER = "feature.replyHolder";
+    static final String KEY_REPLY_SELF_DRAW = "feature.replySelfDraw";
 
     /**
      * Historically observed splash-family activity names. Used as a reflection

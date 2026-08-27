@@ -625,7 +625,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 && LazyDiscoveryPolicy.blocksCacheFastPath(
                         hooksForFastPath.isReplyHolderSelected(),
                         hooksForFastPath.isReplyHolderInstalled(),
-                        cachedRes.targets.containsKey(TargetResolver.KEY_REPLY_HOLDER));
+                        cachedRes.targets.containsKey(TargetResolver.KEY_REPLY_HOLDER)
+                                || cachedRes.targets.containsKey(TargetResolver.KEY_REPLY_SELF_DRAW),
+                        coolapkMajor >= 16);
         if (config.pendingKind() == PurifierConfig.PendingKind.NONE
                 && !replyBlocksFastPath
                 && isCoreReady() && areSelectedFeaturesReady(sessionContext)
@@ -698,6 +700,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
         Map<String, ResolvedTarget> featureTargets = new Issue2Resolver(
                 bridge, loader, log).resolve(config, coolapkMajor);
+        if (config.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR) && coolapkMajor >= 16) {
+            ResolvedTarget reply = new ReplySelfDrawResolver(bridge, loader, log).resolve();
+            if (reply != null) featureTargets.put(reply.key, reply);
+        }
         requireCurrent(sessionContext, "featureResolveEnd");
         trace.mark("featureResolveEnd", "targets=" + featureTargets.keySet());
         requireApplied(applyTargets(sessionContext, featureTargets, "dexkit-feature"),

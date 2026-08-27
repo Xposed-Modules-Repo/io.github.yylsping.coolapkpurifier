@@ -26,6 +26,16 @@ final class LazyDiscoveryPolicy {
         return replySelected && !replyInstalled && cachedHasReplyTarget;
     }
 
+    static boolean blocksCacheFastPath(boolean replySelected, boolean replyInstalled,
+                                       boolean cachedHasReplyTarget, boolean modernReplyDiscovery) {
+        // Old 16.x caches predate this target. Give them a bounded normal scan
+        // rather than treating absence as a permanently resolved UNAVAILABLE.
+        // Unsupported modern hosts can rescan on a later launch; no new
+        // post-READY DexKit worker or framework hook is introduced.
+        return replySelected && !replyInstalled
+                && (cachedHasReplyTarget || modernReplyDiscovery);
+    }
+
     /**
      * Temporary discovery hooks are needed only when the plan still wants the
      * class-loader channel AND at least one selected semantic target is

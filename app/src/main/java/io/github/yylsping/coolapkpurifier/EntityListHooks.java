@@ -149,7 +149,7 @@ final class EntityListHooks {
 
     /**
      * Covers detail reply ads inserted after the normal list transformer. The
-     * dedicated 15/16 holder is stable even when its bind methods are obfuscated.
+     * legacy holder is retained for 15.x.
      */
     synchronized int installReplyHolder(Class<?> holderClass) {
         if (!TargetVerifier.isReplyHolderClass(holderClass)) {
@@ -197,7 +197,43 @@ final class EntityListHooks {
         return installed;
     }
 
-    private void updateReplyHolder(Object holder, boolean sponsored) throws Exception {
+    synchronized boolean installReplySelfDraw(Method method, ClassLoader loader, long expectedGeneration) {
+        if (expectedGeneration != generation || loader != activeLoader
+                || !ReplySelfDrawTarget.isBindMethod(method, loader)) return false;
+        if (handles.containsKey(method)) return true;
+        try {
+            HookHandle handle = module.hook(method)
+                    .setExceptionMode(ExceptionMode.PROTECTIVE)
+                    .setId("coolapk-reply-self-draw")
+                    .intercept(chain -> {
+                        Object result = chain.proceed();
+                        try {
+                            // Existing business hooks survive epoch changes;
+                            // callbacks consult current accessors/config, like
+                            // the legacy holder. The declaring loader must
+                            // still belong to the active runtime.
+                            if (method.getDeclaringClass().getClassLoader() == activeLoader) {
+                                boolean sponsored = classifier.shouldRemoveReplySelfDraw(chain.getArg(0));
+                                updateReplyHolder(chain.getThisObject(), sponsored);
+                                if (sponsored) log.info("removed reply sponsor via self-draw binder=" + method);
+                            }
+                        } catch (Throwable failure) {
+                            log.error("reply self-draw filtering failed", failure);
+                        }
+                        return result;
+                    });
+            handles.put(method, handle);
+            ledger.record(HookLedger.Layer.BUSINESS, "reply", "reply-self-draw-"
+                    + Integer.toHexString(method.toGenericString().hashCode()), method.toGenericString());
+            log.info("installed reply self-draw binder=" + method);
+            return true;
+        } catch (Throwable failure) {
+            log.error("reply self-draw hook install failed", failure);
+            return false;
+        }
+    }
+
+    void updateReplyHolder(Object holder, boolean sponsored) throws Exception {
         Field itemViewField = holder.getClass().getField("itemView");
         Object candidate = itemViewField.get(holder);
         if (!(candidate instanceof View)) {

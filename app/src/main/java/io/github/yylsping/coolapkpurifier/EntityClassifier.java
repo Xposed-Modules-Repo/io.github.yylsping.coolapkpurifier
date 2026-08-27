@@ -75,6 +75,14 @@ final class EntityClassifier {
                 resolved.readTemplate(entity).toLowerCase(Locale.ROOT));
     }
 
+    boolean shouldRemoveReplySelfDraw(Object entity) {
+        PurifierConfig current = config;
+        EntityAccessors resolved = accessors;
+        return entity != null && current != null && resolved != null
+                && current.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR)
+                && ReplySelfDrawTarget.TEMPLATE.equals(resolved.readTemplate(entity));
+    }
+
     /**
      * Applies the switch owned by the hook's known rendering context. Entity
      * strings identify sponsor content, but do not get to re-route a reply

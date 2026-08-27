@@ -41,6 +41,10 @@ final class TargetVerifier {
                 return "method not loadable";
             }
             switch (keyKind(target.key)) {
+                case TargetResolver.KEY_REPLY_SELF_DRAW:
+                    return method.getDeclaringClass() == type
+                            && ReplySelfDrawTarget.isBindMethod(method, loader)
+                            ? null : "reply self-draw contract mismatch";
                 case TargetResolver.KEY_FEED:
                     return isFeedShape(method) && !Modifier.isAbstract(method.getModifiers())
                             ? null : "feed shape mismatch";

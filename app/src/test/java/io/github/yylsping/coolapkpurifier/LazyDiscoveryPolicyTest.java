@@ -8,6 +8,14 @@ import org.junit.Test;
 public class LazyDiscoveryPolicyTest {
 
     @Test
+    public void modernUpgradeScansMissingTargetButInstalledAndDisabledKeepFastPath() {
+        assertTrue(LazyDiscoveryPolicy.blocksCacheFastPath(true, false, false, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, true, true, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(false, false, false, true));
+        assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, false, false, false));
+    }
+
+    @Test
     public void selectedReplyHolderBlocksOnlyWithPersistedTarget() {
         assertTrue(LazyDiscoveryPolicy.blocksCacheFastPath(true, false, true));
         assertFalse(LazyDiscoveryPolicy.blocksCacheFastPath(true, false, false));

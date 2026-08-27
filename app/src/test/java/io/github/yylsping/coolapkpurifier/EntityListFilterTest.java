@@ -62,6 +62,33 @@ public final class EntityListFilterTest {
     }
 
     @Test
+    public void selfDrawRequiresExactTemplateAndHonorsReplySwitch() throws Exception {
+        PurifierConfig config = newConfig();
+        classifier.setConfig(config);
+        Entity sponsor = new Entity("feedDetailReplySponsorCard", "", "", "entityCard");
+        assertTrue(classifier.shouldRemoveReplySelfDraw(sponsor));
+        for (String template : Arrays.asList("feedReply", "reply", "subReply", "feed", "sponsorCard",
+                "feedDetailReplySponsorCardSuffix", "FeedDetailReplySponsorCard", "")) {
+            assertFalse(classifier.shouldRemoveReplySelfDraw(new Entity(
+                    template, "sponsor", "feedDetailReplySponsorCard", "native_ad")));
+        }
+        config.setEnabled(PurifierConfig.Feature.REPLY_SPONSOR, false);
+        config.setEnabled(PurifierConfig.Feature.DETAIL_SPONSOR, true);
+        assertFalse(classifier.shouldRemoveReplySelfDraw(sponsor));
+        assertFalse(classifier.shouldRemoveReplySelfDraw(null));
+        assertFalse(classifier.shouldRemoveReplySelfDraw(new Object()));
+    }
+
+    @Test
+    public void selfDrawPreservesContentWithoutVerifiedGettersOrConfig() throws Exception {
+        Entity sponsor = new Entity("feedDetailReplySponsorCard", "", "", "");
+        assertFalse(classifier.shouldRemoveReplySelfDraw(sponsor));
+        classifier.setConfig(newConfig());
+        classifier.setAccessors(null);
+        assertFalse(classifier.shouldRemoveReplySelfDraw(sponsor));
+    }
+
+    @Test
     public void defaultReplySponsorDoesNotDependOnDisabledDetailSponsor() throws Exception {
         PurifierConfig config = newConfig();
         classifier.setConfig(config);
