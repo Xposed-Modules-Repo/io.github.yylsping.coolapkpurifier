@@ -6,16 +6,16 @@
 
 ## 功能
 
-- 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。设置页面每次 resume 在有限窗口内等待视图就绪，成功或 pause/destroy 后停止，修复反复进入时入口缺失的问题。
+- 在酷安原生“设置”的 `initData` 业务边界插入宿主原生 model，作为 LazyColumn 第一组普通设置项，随列表滚出且不残留点击区域；不再使用固定 View。配置页由当前设置 Activity 所属的 Dialog 承载，系统返回和顶部返回只关闭配置页，保留原生设置及滚动状态。所有选项仍直接持久化到酷安 `files/coolapk_purifier_config.json`，详见[设置页与文档验收](settings_ui_and_docs_followup_report.md)。
 - 默认去除启动/开屏广告和全屏广告。
 - 默认去除首页信息流广告与赞助卡片。
-- 默认启用帖子回复区及评论赞助过滤；15.9.0 保留旧 holder，16.5.1 / 16.6.1 通过源码语义、评论页注册关系、布局资源与父类抽象绑定契约定位专用自绘 binder，只折叠精确 `feedDetailReplySponsorCard`。两版目标安装及缓存读取通过，关闭开关不安装新 Hook。设置页和日志独立显示状态，INSTALLED 不等于自然阳性效果已经验证，也不会自动关闭用户开关。
+- 默认启用帖子回复区及评论赞助过滤；15.9.0 保留旧 holder，16.5.1 / 16.6.1 通过源码语义、评论页注册关系、布局资源与父类抽象绑定契约定位专用自绘 binder，只折叠精确 `feedDetailReplySponsorCard`。两版目标安装及缓存读取通过，关闭开关不安装新 Hook。按用户要求，设置页不再显示“本次启动已安装适配目标”等 Reply 状态副标题；诊断状态仍保留在日志中。INSTALLED 不等于自然阳性效果已经验证，也不会自动关闭用户开关。
 - 可选去除自动评论提示、话题与机型推荐、帖子相关推荐、同话题动态和帖子内推广；酷安 15.x 以下自动禁用这些新选项。
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
 - 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。Mode A 已移除 `LayoutInflater.inflate` / `View.setTag` 布局回退。
 - 配置变更后于下次启动仅解析尚未缓存的已选目标，并分别提示首次适配与适配完成状态。
 - 开屏净化使用已解析的 Splash Activity 展示边界，不再 Hook `FullScreenAdUtils.shouldShowAd`。Instrumentation 用于启动期及必要降级兜底；只有 READY、专用能力与 `SplashLifecycleGuard` 注册均满足时才解除，注册失败保留兜底并如实报告非零 framework。非 Xposed lifecycle guard 在 READY 后继续覆盖已解析及精确 legacy 类名，不做宽泛名称匹配。本轮专用目标为 `SplashAdActivity.onCreate`；FullScreen 未自然触发，仅完成策略/逻辑覆盖验证。
-- 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；设置入口使用 Android `ActivityLifecycleCallbacks`，ViewHolder 使用受控语义定位。临时 ClassLoader discovery 按需安装，并在终态退休。
+- 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；设置入口使用 Android `ActivityLifecycleCallbacks` 提前安装严格验证的原生 `initData` 业务 Hook，失败只做有限重试，不退回 overlay 或 framework Hook。ViewHolder 使用受控语义定位。临时 ClassLoader discovery 按需安装，并在终态退休。
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；build cache 只保存 descriptor 元数据，live target 只在当前 ClassLoader generation 内验证、累积和安装。
 - 多目标覆盖：对本轮成功解析并验证的开屏 Activity 逐一安装 Hook，不把未解析的历史类名算作专用覆盖；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中发现的 `(List, boolean) -> List` 业务入口。
@@ -43,6 +43,7 @@
 | 目标应用 | 酷安（包名 `com.coolapk.market`），运行时动态适配，不按版本分支 |
 | 2.2.1 默认功能 smoke 已完成 | 15.9.0；专用 Reply sponsor 阳性移除未自然触发，不声明全场景覆盖 |
 | 2.2.1 本轮带限制通过 | 16.5.1 / 16.6.1：Reply INSTALLED、核心 READY、零 framework；首次解析及缓存启动通过。16.6.1 正常评论/内联楼中楼与 Reply 关闭通过；自然赞助实际移除未观察到 |
+| 设置 UI 后续验收 | 15.9.0 / 16.5.1 / 16.6.1：原生首项滚动、系统/顶部返回、反复进出和原生设置导航；核心去广告逻辑未改，详见[设置验收](settings_ui_and_docs_followup_report.md) |
 | 历史曾验证、本轮未重新验证 | 13.1.1 / 16.1.2；本地没有对应 APK |
 | Android | 9（API 28）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |

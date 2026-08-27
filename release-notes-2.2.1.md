@@ -4,6 +4,9 @@
 
 ## 改动
 
+- 设置入口改为宿主原生 model 的第一组，随原生列表滚动，不残留固定点击区域；配置页采用设置 Activity 所属 Dialog，系统返回和顶部返回均回到原生设置，反复进出不关闭宿主。未改变核心去广告逻辑。按用户补充要求移除设置页“本次启动已安装适配目标”等 Reply 状态副标题，日志诊断保留。
+- 修正 dist 发布说明指向根目录报告的相对链接；增加文档链接、宿主 Kotlin 反射名称的混淆产物检查。
+
 - 继承 Mode A-ZF：正常 READY 清理后无 framework Hook；Splash lifecycle guard、必要失败兜底、Reply有限重试、HookLedger与设置入口修复保留。
 - 修复16.x开启相关推荐时因旧 holder 不可达而 DEGRADED：采用唯一且严格验证的 Feed.getRelatedData 业务 getter，保留旧专用 holder 兼容路径。
 - 恢复16.5.1 / 16.6.1 Reply专用目标：以评论模板注册、共有源码/渲染标记、动态布局资源及父类抽象绑定契约定位自绘binder；不硬编码混淆名，不扩大到RecyclerView基类。仅在开关开启且精确模板匹配时折叠，复用时恢复原视图状态。旧缓存缺少目标可重新适配，新缓存直接安装。
@@ -21,15 +24,17 @@
 
 原配置、原登录态保留，未清数据或重启手机/LSP；没有Frida/IDA动态附加。工程验收不代表已确定报告者设备的底层失败原因，也不代表风控消失。
 
-最终元数据包在16.6.1完成缓存启动、相关推荐开启后的重新解析、原配置恢复后的缓存启动，均为READY、零framework、Reply INSTALLED。RelatedData getter安装正常；收尾保持原账号、默认三项开启和五个可选项关闭，配置文件哈希及revision与原始值一致。
+上一轮 Reply 候选的最终元数据包在16.6.1完成缓存启动、相关推荐开启后的重新解析、原配置恢复后的缓存启动，均为READY、零framework、Reply INSTALLED。RelatedData getter安装正常；收尾保持原账号、默认三项开启和五个可选项关闭，配置文件哈希及revision与原始值一致。
+
+本轮设置 UI 的根因、修改文件、测试与实机结果见[设置页与文档验收](settings_ui_and_docs_followup_report.md)。
 
 ## 构建与候选校验
 
-- Debug / Compatible / Release：各268 tests，0 failures / errors / skipped；Release lint：0 errors、13 warnings。
-- 源码提交：6c3397b；继承Issue #6检查点72cc5f7与Issue #5检查点8a7dab3。
-- APK：coolapk-purifier-v2.2.1.apk，1,157,985 bytes。
-- APK SHA-256: `56FFD126A3A69F718D0FD966F10F291090358839032290F78F3F49D45C61B709`
+- Debug / Compatible / Release：各275 tests，0 failures / errors / skipped；Release lint：0 errors、13 warnings。
+- 源码提交：ac4f8f0；设置导航修复b197973；继承 Reply 检查点6c3397b、Issue #6检查点72cc5f7与Issue #5检查点8a7dab3。
+- APK：coolapk-purifier-v2.2.1.apk，1,162,197 bytes。
+- APK SHA-256: `666DA9ADF6B43E48A7197D301F149EAFBDC46ACBD69C2B2D3AF6C1EFFEC287BF`
 - Signer certificate SHA-256: `12B482270B217A377CF3881382C86EE9F1C3E2B8E4BE25EE5118F327F2858875`
-- stageReleaseCandidate校验签名及单一证书集合，最终16.6.1安装后base.apk hash一致。三版本已测包与提交后候选ZIP内容仅version-control-info元数据不同，DEX、资源、so完全相同；最终元数据包另在16.6.1验证。后续仅补报告的提交不重打包。
+- stageReleaseCandidate校验签名及单一证书集合，最终16.6.1安装后base.apk hash一致。导航修复候选完成15.9.0/16.5.1/16.6.1验收；随后删除状态副标题的最终包另在16.6.1复核，未重复两版旧宿主。历史报告中的旧校验值仅对应当时的包。后续仅补报告的提交不重打包。
 
 升级模块后正常重启作用域应用酷安即可，不需清数据。自主验收完成后等待用户人工验收与发布授权。

@@ -1,5 +1,7 @@
 # 2.2.1 剩余功能回归（Issue #6 前检查点）
 
+> 后续设置页与文档优化见[设置验收报告](settings_ui_and_docs_followup_report.md)，当前候选信息见[发布说明](release-notes-2.2.1.md)。本文保留本阶段的历史实测范围及 APK 校验值。
+
 日期：2026-08-27；基线 ea8939a，模块 2.2.1 / 11。仅本地验收，未发布或修改远程。
 
 ## A. Reply Sponsor

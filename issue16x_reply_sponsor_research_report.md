@@ -1,5 +1,7 @@
 # 16.x Reply Sponsor 研究与实现验收
 
+> 后续设置页与文档优化见[设置验收报告](settings_ui_and_docs_followup_report.md)，当前候选信息见[发布说明](release-notes-2.2.1.md)。本文保留本阶段的历史实测范围及 APK 校验值。
+
 日期：2026-08-28。代码检查点：`6c3397b`。本报告接续 `issue16x_reply_sponsor_research.md`，更新先前报告中 16.x Reply UNAVAILABLE 的结论；不重写先前阶段的观察记录。
 
 ## 结论

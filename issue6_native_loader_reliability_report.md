@@ -1,5 +1,7 @@
 # Issue #6 — DexKit native loader 可靠性验收
 
+> 后续设置页与文档优化见[设置验收报告](settings_ui_and_docs_followup_report.md)，当前候选信息见[发布说明](release-notes-2.2.1.md)。本文保留本阶段的历史实测范围及 APK 校验值。
+
 日期：2026-08-27～28。基线为 Issue #5 剩余功能回归完成后的 **8a7dab3**，实现提交 **72cc5f7**。模块维持 **2.2.1 / versionCode 11**。仅本地操作，等待人工验收及明确的远程写入授权。
 
 ## 1. 故障层级与根因边界
