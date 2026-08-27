@@ -37,7 +37,6 @@ final class SettingsHooks {
     private final ModuleLog log;
     private final PurifierConfig config;
     private final int coolapkMajor;
-    private final FeatureRuntimeHealth runtimeHealth;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final OwnedSettingsPages<Activity, Dialog> pages = new OwnedSettingsPages<>();
     private final Map<ClassLoader, HookHandle> entryHooks = new HashMap<>();
@@ -46,13 +45,12 @@ final class SettingsHooks {
     private int settingsIcon;
 
     SettingsHooks(XposedModule module, HookLedger ledger, ModuleLog log,
-                  PurifierConfig config, int coolapkMajor, FeatureRuntimeHealth runtimeHealth) {
+                  PurifierConfig config, int coolapkMajor) {
         this.module = module;
         this.ledger = ledger;
         this.log = log;
         this.config = config;
         this.coolapkMajor = coolapkMajor;
-        this.runtimeHealth = runtimeHealth;
         injectionRetry = new PageInjectionRetry<>(
                 (task, delay) -> mainHandler.postDelayed(task, delay),
                 mainHandler::removeCallbacks, this::ensureNativeEntry,
@@ -235,25 +233,6 @@ final class SettingsHooks {
             summary.setTextColor(resolveColor(context,
                     android.R.attr.textColorSecondary, 0xff888888));
             labels.addView(summary);
-        }
-        if (feature == PurifierConfig.Feature.REPLY_SPONSOR && supported) {
-            TextView status = new TextView(context);
-            status.setText(runtimeHealth.replyMessage());
-            status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            status.setTextColor(resolveColor(context,
-                    android.R.attr.textColorSecondary, 0xff888888));
-            Runnable refresh = () -> mainHandler.post(
-                    () -> status.setText(runtimeHealth.replyMessage()));
-            status.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
-                @Override public void onViewAttachedToWindow(View view) {
-                    runtimeHealth.addListener(refresh);
-                    refresh.run();
-                }
-                @Override public void onViewDetachedFromWindow(View view) {
-                    runtimeHealth.removeListener(refresh);
-                }
-            });
-            labels.addView(status);
         }
         row.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
