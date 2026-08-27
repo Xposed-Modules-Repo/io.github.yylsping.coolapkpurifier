@@ -19,18 +19,38 @@ import io.github.libxposed.api.XposedModule;
 
 /** Installs the cached method-level feature hooks and evaluates selected coverage. */
 final class FeatureHooks {
-    private static final String KEY_REPLY_HOLDER = "reply_sponsor_holder";
+    private static final String KEY_REPLY_HOLDER = TargetResolver.KEY_REPLY_HOLDER;
+    private static final String REPLY_HOLDER_CLASS =
+            "com.coolapk.market.viewholder.MultiFeedReplyViewHolder";
+    private static final String AUTO_COMMENT_CLASS =
+            "com.coolapk.market.view.cardlist.component."
+                    + "RecyclerViewItemFullVisibleControllerKt";
+    private static final String TOPIC_CONFIG_CLASS =
+            "com.coolapk.market.view.feedv8.component.TopicRecommendConfig";
+    private static final String RELATED_HOLDER_CLASS =
+            "com.coolapk.market.viewholder.RelatedDataViewHolder";
+    private static final String DETAIL_SPONSOR_HOLDER_CLASS =
+            "com.coolapk.market.view.ad.SponsorSelfDrawDetailViewHolder";
+
+    /** Notified when a lazy-discovered semantic class becomes persistable. */
+    interface SemanticClassDiscoveredListener {
+        void onSemanticClassDiscovered(String cacheKey, String classDescriptor,
+                                       ClassLoader loader, long generation);
+    }
+
     private final XposedModule module;
     private final ModuleLog log;
     private final PurifierConfig config;
     private final int coolapkMajor;
     private final EntityListHooks entityListHooks;
     private final HookInstallPlan plan;
+    private final HookLedger ledger;
     private final HookSiteRegistry<HookHandle> handles = new HookSiteRegistry<>();
     private final FeatureInstallState installState;
     private final Set<View> guardedHolderViews = java.util.Collections.newSetFromMap(
             new WeakHashMap<>());
     private final LazyHookRegistry lazyHooks = new LazyHookRegistry();
+    private volatile SemanticClassDiscoveredListener discoveryListener;
     private boolean targetPlanLogged;
     private boolean lazyDiscoveryPermanentlyDisabled;
     private volatile long generation;
@@ -38,7 +58,8 @@ final class FeatureHooks {
 
     FeatureHooks(XposedModule module, ModuleLog log, PurifierConfig config,
                  int coolapkMajor, EntityListHooks entityListHooks,
-                 HookInstallPlan plan, FeatureInstallState installState) {
+                 HookInstallPlan plan, FeatureInstallState installState,
+                 HookLedger ledger) {
         this.module = module;
         this.log = log;
         this.config = config;
@@ -46,6 +67,11 @@ final class FeatureHooks {
         this.entityListHooks = entityListHooks;
         this.plan = plan;
         this.installState = installState;
+        this.ledger = ledger;
+    }
+
+    void setSemanticDiscoveryListener(SemanticClassDiscoveredListener listener) {
+        discoveryListener = listener;
     }
 
     synchronized void beginGeneration(long nextGeneration, ClassLoader loader) {
@@ -88,8 +114,12 @@ final class FeatureHooks {
                     "com.coolapk.market.view.feedv8.component.TopicRecommendKt");
         }
         if (plan.resolveReplyHolder) {
-            installSemanticIfLoadable(loader,
-                    "com.coolapk.market.viewholder.MultiFeedReplyViewHolder");
+            // Cache-first (Mode A-ZF Phase 3): a persisted reply holder target
+            // installs directly whenever the class is loadable, so the two
+            // temporary loadClass hooks are never installed on cache hits.
+            if (targets.get(KEY_REPLY_HOLDER) != null) {
+                installSemanticIfLoadable(loader, REPLY_HOLDER_CLASS);
+            }
         }
         if (plan.resolveRelatedData) {
             installSemanticIfLoadable(loader,
@@ -122,8 +152,79 @@ final class FeatureHooks {
         try {
             maybeInstallSemanticClass(Class.forName(className, false, loader));
         } catch (Throwable ignored) {
-            // The persistent loadClass hook handles this staged dex later.
+            // Not loadable in this generation yet: the session-end
+            // ensureLazyDiscovery fallback installs the temporary loadClass
+            // hooks so a later dex append can still be observed.
         }
+    }
+
+    /**
+     * Mode A-ZF Phase 3: the temporary loadClass hooks are installed only when
+     * selected semantic targets are still missing AND a direct install of the
+     * already-loadable classes cannot close the gap. Idempotent and safe to
+     * call from any session outcome.
+     */
+    synchronized void ensureLazyDiscovery(Map<String, ResolvedTarget> targets,
+                                          String reason) {
+        if (lazyDiscoveryPermanentlyDisabled
+                || coolapkMajor < 15 || !plan.installClassLoader) {
+            return;
+        }
+        if (!hasMissingSemanticTargets(targets)) {
+            log.info("feature lazy discovery skipped reason=allSemanticTargetsInstalled"
+                    + " trigger=" + reason);
+            return;
+        }
+        // Classes already appended to the runtime dex install without any
+        // framework hook; only genuinely future loads need the observers.
+        attemptDirectSemanticInstall();
+        if (!hasMissingSemanticTargets(targets)) {
+            log.info("feature lazy discovery skipped reason=directInstallComplete"
+                    + " trigger=" + reason);
+            return;
+        }
+        installLazyResolvers();
+        log.info("feature lazy discovery ensured reason=" + reason
+                + " coverage=" + lazyHooks.size() + "/2");
+    }
+
+    private void attemptDirectSemanticInstall() {
+        ClassLoader loader = activeLoader;
+        if (loader == null) {
+            return;
+        }
+        if (plan.resolveReplyHolder) {
+            installSemanticIfLoadable(loader, REPLY_HOLDER_CLASS);
+        }
+        if (plan.resolveAutoComment) {
+            installSemanticIfLoadable(loader, AUTO_COMMENT_CLASS);
+        }
+        if (plan.resolveTopicRecommend) {
+            installSemanticIfLoadable(loader, TOPIC_CONFIG_CLASS);
+        }
+        if (plan.resolveRelatedData) {
+            installSemanticIfLoadable(loader, RELATED_HOLDER_CLASS);
+        }
+        if (plan.resolveDetailSponsor) {
+            installSemanticIfLoadable(loader, DETAIL_SPONSOR_HOLDER_CLASS);
+        }
+    }
+
+    /** Whether any selected semantic target is still uninstalled. */
+    synchronized boolean hasMissingSemanticTargets(Map<String, ResolvedTarget> targets) {
+        boolean replyMissing = plan.resolveReplyHolder
+                && !installState.hasFallbackHook(KEY_REPLY_HOLDER);
+        return replyMissing
+                || !FeatureTargetReadiness.missing(
+                        config, coolapkMajor, targets, installState).isEmpty();
+    }
+
+    synchronized boolean isReplyHolderSelected() {
+        return plan.resolveReplyHolder;
+    }
+
+    synchronized boolean isReplyHolderInstalled() {
+        return installState.hasFallbackHook(KEY_REPLY_HOLDER);
     }
 
     /** Hooks semantic business classes as protected Coolapk appends their dex. */
@@ -137,6 +238,9 @@ final class FeatureHooks {
             try {
                 hookLoadClass(LazyHookRegistry.HookSite.LOAD_CLASS_ONE_ARG,
                         ClassLoader.class.getDeclaredMethod("loadClass", String.class));
+                ledger.record(HookLedger.Layer.FRAMEWORK, "feature",
+                        "feature-lazy-loadClass-1",
+                        "ClassLoader.loadClass(String)");
             } catch (Throwable throwable) {
                 log.error("feature lazy one-arg resolver install failed", throwable);
             }
@@ -146,6 +250,9 @@ final class FeatureHooks {
                 hookLoadClass(LazyHookRegistry.HookSite.LOAD_CLASS_TWO_ARG,
                         ClassLoader.class.getDeclaredMethod(
                                 "loadClass", String.class, boolean.class));
+                ledger.record(HookLedger.Layer.FRAMEWORK, "feature",
+                        "feature-lazy-loadClass-2",
+                        "ClassLoader.loadClass(String,boolean)");
             } catch (Throwable throwable) {
                 log.error("feature lazy two-arg resolver install failed", throwable);
             }
@@ -178,10 +285,11 @@ final class FeatureHooks {
             return;
         }
         String className = type.getName();
-        if ("com.coolapk.market.viewholder.MultiFeedReplyViewHolder".equals(className)) {
+        if (REPLY_HOLDER_CLASS.equals(className)) {
             if (plan.resolveReplyHolder
                     && entityListHooks.installReplyHolder(type) > 0) {
                 installState.markFallbackHook(expectedGeneration, KEY_REPLY_HOLDER);
+                notifySemanticClassDiscovered(KEY_REPLY_HOLDER, type);
             }
             retireLazyResolversIfComplete();
             return;
@@ -253,6 +361,7 @@ final class FeatureHooks {
     synchronized LazyHookRegistry.RetireResult retireLazyResolvers(String reason) {
         int before = lazyHooks.size();
         LazyHookRegistry.RetireResult result = lazyHooks.retire();
+        retireLazyLedgerEntries(result, reason, false);
         log.info("feature lazy class resolver retired reason=" + reason
                 + " handlesBefore=" + before
                 + " unhookedThisClose=" + result.unhookedThisClose
@@ -271,6 +380,7 @@ final class FeatureHooks {
         lazyDiscoveryPermanentlyDisabled = true;
         int before = lazyHooks.size();
         LazyHookRegistry.RetireResult result = lazyHooks.retirePermanently();
+        retireLazyLedgerEntries(result, reason, true);
         log.info("feature lazy class resolver retired reason=" + reason
                 + " handlesBefore=" + before
                 + " unhookedThisClose=" + result.unhookedThisClose
@@ -282,6 +392,39 @@ final class FeatureHooks {
                 + " logicalEnabled=" + result.logicalEnabled
                 + " permanent=true");
         return result;
+    }
+
+    private void retireLazyLedgerEntries(LazyHookRegistry.RetireResult result,
+                                         String reason, boolean permanent) {
+        if (result.isActive()) {
+            // A failed unhook stays active in the ledger: frameworkActiveHooks
+            // must keep reporting it instead of pretending it is gone.
+            return;
+        }
+        String detail = reason + (permanent ? " permanent=true" : "")
+                + " unhooked=" + result.unhookedThisClose
+                + " failed=" + result.failedThisClose;
+        ledger.retire("feature-lazy-loadClass-1", detail);
+        ledger.retire("feature-lazy-loadClass-2", detail);
+    }
+
+    /**
+     * Cache persistence callback for the reply holder: the only semantic
+     * target that has no DexKit resolver and is therefore only discoverable
+     * through the temporary loadClass hooks. Failures never break discovery.
+     */
+    private void notifySemanticClassDiscovered(String cacheKey, Class<?> type) {
+        SemanticClassDiscoveredListener listener = discoveryListener;
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.onSemanticClassDiscovered(cacheKey,
+                    DescriptorUtils.classDescriptorOf(type),
+                    type.getClassLoader(), generation);
+        } catch (Throwable throwable) {
+            log.error("semantic discovery listener failed key=" + cacheKey, throwable);
+        }
     }
 
     /** Used only for a newly built, not-yet-published terminal configuration. */
@@ -337,6 +480,8 @@ final class FeatureHooks {
                         });
                 handles.put(siteKey, constructor, handle);
                 installState.markFallbackHook(expectedGeneration, key);
+                ledger.record(HookLedger.Layer.BUSINESS, "feature",
+                        "feature-" + key + "-constructor", constructor.toGenericString());
                 log.info("dedicated issue2 constructor hook installed key=" + key
                         + " constructor=" + constructor);
             } catch (Throwable throwable) {
@@ -372,6 +517,8 @@ final class FeatureHooks {
                         });
                 handles.put(siteKey, method, handle);
                 installState.markFallbackHook(expectedGeneration, key);
+                ledger.record(HookLedger.Layer.BUSINESS, "feature",
+                        "feature-" + key + "-holder", method.toGenericString());
                 log.info("dedicated issue2 holder hook installed key=" + key
                         + " method=" + method);
             } catch (Throwable throwable) {
@@ -510,6 +657,8 @@ final class FeatureHooks {
                     });
             handles.put(key, method, handle);
             installState.markPrimaryHook(expectedGeneration, key);
+            ledger.record(HookLedger.Layer.BUSINESS, "feature",
+                    "feature-" + key, method.toGenericString());
             log.info("feature hook installed key=" + key + " method=" + method);
         } catch (Throwable throwable) {
             log.error("feature hook install failed key=" + key + " method=" + method,

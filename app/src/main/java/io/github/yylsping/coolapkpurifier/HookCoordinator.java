@@ -56,6 +56,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final XposedModule module;
     private final ModuleLog log;
     private final ClassLoader primaryLoader;
+    private final HookLedger hookLedger = new HookLedger();
     private final SplashHooks splashHooks;
     private final EntityListHooks entityListHooks;
     private final FeatureInstallState featureInstallState = new FeatureInstallState();
@@ -73,6 +74,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     /** Coalesces triggers that arrive while a session runs into one follow-up. */
     private final SessionScheduler sessionScheduler = new SessionScheduler();
     private final AtomicBoolean bootstrapRetired = new AtomicBoolean();
+    private final AtomicBoolean attachHookRetired = new AtomicBoolean();
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
     private final OnceFlag terminalCleaned = new OnceFlag();
@@ -113,8 +115,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         this.runtimeEpoch = new ResolutionEpoch(primaryLoader);
         this.terminalTransaction = new TerminalTransaction(runtimeEpoch);
         this.configurationTransaction = new RuntimeConfigurationTransaction(runtimeEpoch);
-        this.splashHooks = new SplashHooks(module, log, this);
-        this.entityListHooks = new EntityListHooks(module, log);
+        this.splashHooks = new SplashHooks(module, log, this, hookLedger);
+        this.entityListHooks = new EntityListHooks(module, log, hookLedger);
         this.runtimeDexObserver = new RuntimeDexObserver(module, log, this);
         this.recoveryController = new RecoveryController(log, null, null);
         this.firstAdaptationToast = new FirstAdaptationToast(log);
@@ -126,6 +128,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
         splashHooks.installInstrumentationFallback();
         runtimeDexObserver.install();
+        hookLedger.record(HookLedger.Layer.FRAMEWORK, "coordinator",
+                "runtime-observer-loadClass-1", "ClassLoader.loadClass(String)");
+        hookLedger.record(HookLedger.Layer.FRAMEWORK, "coordinator",
+                "runtime-observer-loadClass-2", "ClassLoader.loadClass(String,boolean)");
         installApplicationAttachHook();
 
         mainHandler.postDelayed(() -> watchdog(WATCHDOG_RETRY_REASON), WATCHDOG_DELAY_MILLIS);
@@ -155,6 +161,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                         return result;
                     });
             bootstrapHandles.add(handle);
+            hookLedger.record(HookLedger.Layer.FRAMEWORK, "coordinator",
+                    "application-attach", "Application.attach(Context)");
             traceAfterContext("attachHookInstalled", "before attach");
         } catch (Throwable throwable) {
             log.error("Application.attach bootstrap hook install failed", throwable);
@@ -163,20 +171,85 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     private void onApplicationAttached(Application application, Context baseContext) {
         long start = SystemClock.elapsedRealtime();
-        // Application.getApplicationContext() is briefly null on some protected
-        // Coolapk builds. The hooked receiver itself is already attached after
-        // chain.proceed() and is the canonical lifecycle owner.
-        appContext = application != null ? application : baseContext;
-        trace = new BootstrapTrace(appContext);
-        trace.mark("attachAfter", "context=" + appContext.getPackageName());
-        initializeRuntimeConfiguration(appContext);
-        cache = new ResolutionCache(appContext);
-        recoveryController.attachContext(appContext);
-        recoveryController.attachTrace(trace);
-        markState(BootstrapState.WAIT_RUNTIME_DEX);
-        log.info("coordinator attachAfter state=" + state
-                + " attachElapsedMs=" + (SystemClock.elapsedRealtime() - start));
-        ensureIdentityAsync();
+        try {
+            // Application.getApplicationContext() is briefly null on some protected
+            // Coolapk builds. The hooked receiver itself is already attached after
+            // chain.proceed() and is the canonical lifecycle owner.
+            appContext = application != null ? application : baseContext;
+            trace = new BootstrapTrace(appContext);
+            trace.mark("attachAfter", "context=" + appContext.getPackageName());
+            initializeRuntimeConfiguration(appContext);
+            cache = new ResolutionCache(appContext);
+            recoveryController.attachContext(appContext);
+            recoveryController.attachTrace(trace);
+            markState(BootstrapState.WAIT_RUNTIME_DEX);
+            log.info("coordinator attachAfter state=" + state
+                    + " attachElapsedMs=" + (SystemClock.elapsedRealtime() - start));
+            ensureIdentityAsync();
+            maybeRetireApplicationAttach();
+        } catch (Throwable throwable) {
+            // Mode A-ZF Phase 1: a failed handoff must never silently retire
+            // the bootstrap attach hook. The watchdog/session machinery is the
+            // explicit fallback; the hook stays installed for a later retry.
+            log.error("attach handoff failed; Application.attach hook retained",
+                    throwable);
+            traceAfterContext("attachHandoffFailed",
+                    "error=" + throwable.getClass().getName());
+        }
+    }
+
+    /**
+     * Mode A-ZF Phase 1: once the coordinator holds everything the attach
+     * hook provided (context, config, settings lifecycle, self-sufficient
+     * session triggers), the framework hook is unhooked. The unhook runs on
+     * the next main-thread message so it never races the interceptor that is
+     * currently executing this handoff.
+     */
+    private void maybeRetireApplicationAttach() {
+        SettingsHooks settings = settingsHooks;
+        AttachHandoffPolicy.HandoffState handoff = new AttachHandoffPolicy.HandoffState(
+                appContext != null,
+                config != null,
+                settings != null && settings.isLifecycleCallbacksInstalled());
+        if (!AttachHandoffPolicy.canRetireAttach(handoff)) {
+            String missing = AttachHandoffPolicy.missingCondition(handoff);
+            log.info("attach hook retained reason=" + missing);
+            traceAfterContext("attachRetireDeferred", "reason=" + missing);
+            return;
+        }
+        if (!attachHookRetired.compareAndSet(false, true)) {
+            return;
+        }
+        mainHandler.post(() -> retireApplicationAttachNow("handoffComplete"));
+    }
+
+    private void retireApplicationAttachNow(String reason) {
+        int unhooked = 0;
+        int failed = 0;
+        List<HookHandle> retained = new ArrayList<>();
+        synchronized (bootstrapHandles) {
+            for (HookHandle handle : bootstrapHandles) {
+                try {
+                    handle.unhook();
+                    unhooked++;
+                } catch (Throwable throwable) {
+                    failed++;
+                    retained.add(handle);
+                    log.error("Application.attach unhook failed", throwable);
+                }
+            }
+            bootstrapHandles.clear();
+            bootstrapHandles.addAll(retained);
+        }
+        if (retained.isEmpty()) {
+            hookLedger.retire("application-attach", reason
+                    + " unhooked=" + unhooked);
+        }
+        log.info("coordinator attachHookRetired=true reason=" + reason
+                + " unhooked=" + unhooked + " failed=" + failed
+                + " remaining=" + retained.size());
+        traceAfterContext("attachHookRetired", "reason=" + reason
+                + " failed=" + failed);
     }
 
     // ------------------------------------------------------------------
@@ -322,7 +395,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             FeatureHooks hooks = featureHooks;
             if (hooks != null) {
                 hooks.beginGeneration(nextGeneration, loader);
-                hooks.installLazyResolvers();
+                // Mode A-ZF Phase 3: the temporary loadClass hooks are NOT
+                // installed here. A resolution session decides after applying
+                // its targets whether lazy discovery is still needed.
             }
         });
         ResolutionEpoch.Transition transition = result[0];
@@ -492,8 +567,17 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         // Cache-hit READY needs BOTH the persisted anchors-settled flag
         // (deadline-settled or partial saves must re-resolve) AND every
         // listed feed method live-hooked in THIS process — staged DEX can
-        // still make some of them unloadable this early.
+        // still make some of them unloadable this early. A selected reply
+        // holder that is not installed also blocks the fast path (Mode A-ZF
+        // Phase 3): the session must fall through so the temporary
+        // loadClass hooks can discover it, matching the old window.
+        FeatureHooks hooksForFastPath = featureHooks;
+        boolean replyBlocksFastPath = hooksForFastPath != null
+                && LazyDiscoveryPolicy.blocksCacheFastPath(
+                        hooksForFastPath.isReplyHolderSelected(),
+                        hooksForFastPath.isReplyHolderInstalled());
         if (config.pendingKind() == PurifierConfig.PendingKind.NONE
+                && !replyBlocksFastPath
                 && isCoreReady() && areSelectedFeaturesReady(sessionContext)
                 && cachedRes.coverageSettled
                 && cachedFeedMethodsAllLive(sessionContext, cachedRes.targets)) {
@@ -506,6 +590,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         trace.mark("cacheMiss", "verified=" + verified.size()
                 + " total=" + cachedRes.targets.size()
                 + " trigger=" + trigger);
+        // Mode A-ZF Phase 3: a cache miss means this session needs the
+        // discovery channel for late semantic classes. Arming it here keeps
+        // the observer window as wide as the pre-refactor eager install.
+        ensureLazyDiscoveryAfterSession("cacheMiss:" + trigger);
 
         requireCurrent(sessionContext, "bridgeCreate");
         org.luckypray.dexkit.DexKitBridge bridge = sessionContext.ensureBridge(
@@ -515,6 +603,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             commitState(sessionContext, BootstrapState.WAIT_RUNTIME_DEX);
             log.info("resolver bridge unavailable state=WAIT_RUNTIME_DEX trigger=" + trigger);
             rearmObserverForRetry();
+            ensureLazyDiscoveryAfterSession("bridgeUnavailable:" + trigger);
             return;
         }
 
@@ -554,6 +643,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             rearmObserverForRetry();
             log.info("resolver splash retryable state=WAIT_RUNTIME_DEX"
                     + " reason=zeroOrUnverifiableCandidates trigger=" + trigger);
+            ensureLazyDiscoveryAfterSession("splashRetryable:" + trigger);
         }
 
         Map<String, ResolvedTarget> featureTargets = new Issue2Resolver(
@@ -595,6 +685,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 ReadinessPolicy.sessionOutcome(coreReady, coverageSettled);
         switch (outcome) {
             case READY:
+                // Final direct-install attempt for any still-missing semantic
+                // class before the terminal cleanup retires the observers.
+                ensureLazyDiscoveryAfterSession("readyOutcome:" + trigger);
                 maybeRecoverAfterSplashResolved(sessionContext);
                 finishReady(sessionContext, "anchors");
                 return;
@@ -640,6 +733,22 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
         requireCurrent(sessionContext, "sessionFinish");
         maybeRecoverAfterSplashResolved(sessionContext);
+        ensureLazyDiscoveryAfterSession(trigger);
+    }
+
+    /**
+     * Mode A-ZF Phase 3: the ONLY installer of the temporary feature lazy
+     * loadClass hooks. Called when a resolution session finishes (or takes a
+     * retryable exit) with selected semantic targets still missing; the hooks
+     * self-retire as soon as the last target installs.
+     */
+    private void ensureLazyDiscoveryAfterSession(String trigger) {
+        FeatureHooks hooks = featureHooks;
+        if (hooks == null) {
+            return;
+        }
+        hooks.ensureLazyDiscovery(
+                generationTargets.snapshot(hooks.generation()), trigger);
     }
 
     private boolean isSessionCurrent(ResolutionSessionContext sessionContext) {
@@ -1120,6 +1229,33 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 ? new LazyHookRegistry.RetireResult(0, 0, 0)
                 : hooks.retireLazyResolversPermanently("terminal:" + state);
         boolean featureLazyActive = featureLazyResult.isActive();
+
+        // Mode A-ZF Phase 2: on a clean READY with the specific splash hook
+        // installed, the generic Instrumentation safety gate is really
+        // unhooked; every other terminal outcome retains it as the documented
+        // DEGRADED fallback.
+        boolean instrumentationRetired =
+                FrameworkRetirePolicy.shouldRetireInstrumentationSafety(
+                        terminalSnapshot.terminalState, isSplashReady());
+        boolean instrumentationSafetyActive;
+        if (instrumentationRetired) {
+            SplashHooks.SafetyRetireResult safetyResult =
+                    splashHooks.retireInstrumentationSafety("terminal:" + state);
+            instrumentationSafetyActive = safetyResult.isFrameworkActive();
+        } else {
+            instrumentationSafetyActive = splashHooks.isInstrumentationSafetyActive();
+            log.info("instrumentation safety retained reason="
+                    + FrameworkRetirePolicy.retainReason(
+                            terminalSnapshot.terminalState, isSplashReady()));
+        }
+        String observerRetireReason = "terminal:" + state
+                + " unhooked=" + runtimeWatcherResult.totalUnhooked
+                + " failed=" + runtimeWatcherResult.totalFailures
+                + " remaining=" + runtimeWatcherResult.remaining;
+        if (!runtimeWatcherResult.isFrameworkActive()) {
+            hookLedger.retire("runtime-observer-loadClass-1", observerRetireReason);
+            hookLedger.retire("runtime-observer-loadClass-2", observerRetireReason);
+        }
         List<String> missingRequired = terminalSnapshot.missingRequired;
         traceAfterContext("terminalCleanup", "state=" + terminalSnapshot.terminalState
                 + " terminalGeneration=" + terminalSnapshot.generation
@@ -1149,6 +1285,13 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 + " terminalGeneration=" + terminalSnapshot.generation
                 + " terminalLoaderIdentity="
                 + System.identityHashCode(terminalSnapshot.loader));
+        String ledgerSummary = hookLedger.summaryLine(state.name());
+        log.info(ledgerSummary);
+        log.info("instrumentationSafetyActive=" + instrumentationSafetyActive
+                + " instrumentationSafetyRetired=" + instrumentationRetired);
+        traceAfterContext("hookLedger", ledgerSummary);
+        traceAfterContext("instrumentationSafety",
+                "retired=" + instrumentationRetired + " active=" + instrumentationSafetyActive);
         worker.shutdown();
         log.info("coordinator bootstrap lifecycle retired executorShutdown=true"
                 + " runtimeWatcherUnhookedThisClose="
@@ -1191,6 +1334,53 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             recoveryController.markSplashEscaped();
             recoveryController.onSplashResolved(cache);
         }), "recoveryCommit");
+    }
+
+    /**
+     * Mode A-ZF Phase 3 persistence: a lazily discovered semantic class (the
+     * reply holder) becomes a cached class-only target so the NEXT process
+     * installs it directly and never needs the loadClass hooks. Runs off the
+     * interceptor thread; a rejected dispatch (terminal worker shutdown) only
+     * skips persistence for this process.
+     */
+    private void onSemanticClassDiscovered(String cacheKey, String classDescriptor,
+                                           ClassLoader loader, long generation) {
+        final ResolutionCache persistCache = cache;
+        final TargetIdentity persistIdentity = identity;
+        if (persistCache == null || persistIdentity == null || loader == null) {
+            log.info("semantic persist skipped reason=stateMissing key=" + cacheKey);
+            return;
+        }
+        try {
+            worker.execute(() -> {
+                try {
+                    ResolvedTarget target = new ResolvedTarget(
+                            cacheKey, "lazy_semantic_class", classDescriptor, "");
+                    String problem = TargetVerifier.verify(target, loader);
+                    if (problem != null) {
+                        log.info("semantic persist rejected key=" + cacheKey
+                                + " reason=" + problem);
+                        return;
+                    }
+                    ResolutionCache.CachedResolution current =
+                            persistCache.loadResolution(persistIdentity);
+                    Map<String, ResolvedTarget> merged =
+                            new LinkedHashMap<>(current.targets);
+                    merged.put(cacheKey, target);
+                    generationTargets.merge(
+                            runtimeEpoch.generation(),
+                            java.util.Collections.singletonMap(cacheKey, target));
+                    persistCache.saveTargets(persistIdentity, merged,
+                            current.coverageSettled);
+                    log.info("semantic target persisted key=" + cacheKey
+                            + " totalEntries=" + merged.size());
+                } catch (Throwable throwable) {
+                    log.error("semantic persist failed key=" + cacheKey, throwable);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            log.info("semantic persist skipped reason=workerShutdown key=" + cacheKey);
+        }
     }
 
     private void watchdog(String reason) {
@@ -1327,7 +1517,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             HookInstallPlan plan = HookInstallPlan.from(loaded, loadedMajor);
             FeatureHooks loadedFeatureHooks = new FeatureHooks(
                     module, log, loaded, loadedMajor,
-                    entityListHooks, plan, featureInstallState);
+                    entityListHooks, plan, featureInstallState, hookLedger);
+            loadedFeatureHooks.setSemanticDiscoveryListener(
+                    this::onSemanticClassDiscovered);
             SettingsHooks loadedSettingsHooks = new SettingsHooks(
                     log, loaded, loadedMajor);
             final long[] boundGeneration = {0L};
@@ -1350,13 +1542,16 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             Context lifecycleContext = currentApplication();
             loadedSettingsHooks.install(lifecycleContext != null
                     ? lifecycleContext : application);
-            loadedFeatureHooks.installLazyResolvers();
+            // Mode A-ZF Phase 3: no eager lazy-resolver install here. The
+            // temporary loadClass hooks are only installed by a resolution
+            // session that ends with selected semantic targets still missing.
             log.info("configuration initialized coolapkMajor=" + loadedMajor
                     + " pending=" + loaded.pendingKind()
                     + " revision=" + loaded.revision()
                     + " hookPlan=classLoader:" + plan.installClassLoader
                     + " generation=" + boundGeneration[0]
                     + " terminal=" + state.isTerminal()
+                    + " lazyDiscovery=onDemand"
                     + " lazyLogicalEnabled="
                     + loadedFeatureHooks.areLazyResolversLogicallyEnabled()
                     + " lazyFrameworkActive="

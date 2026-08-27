@@ -8,7 +8,7 @@ import org.junit.Test;
 public final class EntityListHooksGenerationTest {
     @Test
     public void sameTopicGateClosesImmediatelyAndRejectsLateOldEvidence() {
-        EntityListHooks hooks = new EntityListHooks(null, new ModuleLog(null));
+        EntityListHooks hooks = new EntityListHooks(null, new ModuleLog(null), new HookLedger());
         ClassLoader first = new ClassLoader() { };
         ClassLoader second = new ClassLoader() { };
         hooks.beginGeneration(1, first);

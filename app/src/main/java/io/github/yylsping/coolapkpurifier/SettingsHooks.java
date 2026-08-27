@@ -101,6 +101,11 @@ final class SettingsHooks {
         }
     }
 
+    /** Attach-handoff precondition (Mode A-ZF Phase 1). */
+    boolean isLifecycleCallbacksInstalled() {
+        return lifecycleCallbacksInstalled;
+    }
+
     private void maybeInject(Activity activity) {
         try {
             if (activity == null || activity.isFinishing() || activity.isDestroyed()

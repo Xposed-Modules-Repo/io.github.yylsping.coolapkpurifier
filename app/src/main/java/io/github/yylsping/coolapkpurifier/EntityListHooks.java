@@ -25,6 +25,7 @@ import io.github.libxposed.api.XposedModule;
 final class EntityListHooks {
     private final XposedModule module;
     private final ModuleLog log;
+    private final HookLedger ledger;
     private final EntityClassifier classifier = new EntityClassifier();
     private final EntityListFilter filter = new EntityListFilter(classifier);
     private final HookedFeedRegistry hooked = new HookedFeedRegistry();
@@ -34,9 +35,10 @@ final class EntityListHooks {
     private volatile ClassLoader activeLoader;
     private volatile long generation;
 
-    EntityListHooks(XposedModule module, ModuleLog log) {
+    EntityListHooks(XposedModule module, ModuleLog log, HookLedger ledger) {
         this.module = module;
         this.log = log;
+        this.ledger = ledger;
     }
 
     void setConfig(PurifierConfig config, int coolapkMajor) {
@@ -123,6 +125,9 @@ final class EntityListHooks {
                     });
             handles.put(method, handle);
             hooked.add(method);
+            ledger.record(HookLedger.Layer.BUSINESS, "feed",
+                    "feed-filter-" + Integer.toHexString(method.toGenericString().hashCode()),
+                    method.toGenericString());
             log.info("installed feed filter hook method=" + method);
             return 1;
         } catch (Throwable throwable) {
@@ -186,6 +191,10 @@ final class EntityListHooks {
                         });
                 handles.put(method, handle);
                 installed++;
+                ledger.record(HookLedger.Layer.BUSINESS, "feed",
+                        "reply-holder-" + Integer.toHexString(
+                                method.toGenericString().hashCode()),
+                        method.toGenericString());
                 log.info("installed reply sponsor holder hook method=" + method);
             } catch (Throwable throwable) {
                 log.error("reply sponsor holder hook install failed method=" + method,

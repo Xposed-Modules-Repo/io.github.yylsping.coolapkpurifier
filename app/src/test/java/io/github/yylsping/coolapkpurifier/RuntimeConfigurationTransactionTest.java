@@ -29,7 +29,7 @@ public final class RuntimeConfigurationTransactionTest {
                 new RuntimeConfigurationTransaction(epoch);
         FeatureInstallState installState = new FeatureInstallState();
         installState.beginGeneration(1L);
-        EntityListHooks entityHooks = new EntityListHooks(null, new ModuleLog(null));
+        EntityListHooks entityHooks = new EntityListHooks(null, new ModuleLog(null), new HookLedger());
         entityHooks.beginGeneration(1L, l1);
         FeatureHooks localFeatureHooks = featureHooks(entityHooks, installState);
         AtomicLong initializerObserved = new AtomicLong();
@@ -84,7 +84,7 @@ public final class RuntimeConfigurationTransactionTest {
         RuntimeConfigurationTransaction transaction =
                 new RuntimeConfigurationTransaction(epoch);
         FeatureHooks featureHooks = featureHooks(
-                new EntityListHooks(null, new ModuleLog(null)),
+                new EntityListHooks(null, new ModuleLog(null), new HookLedger()),
                 new FeatureInstallState());
         CountDownLatch publishedBeforeLazyInstall = new CountDownLatch(1);
         CountDownLatch resumeInitializer = new CountDownLatch(1);
@@ -113,7 +113,7 @@ public final class RuntimeConfigurationTransactionTest {
         // hooks are permanently disabled inside the epoch before publishing.
         AtomicBoolean terminal = new AtomicBoolean(true);
         FeatureHooks lateFeatureHooks = featureHooks(
-                new EntityListHooks(null, new ModuleLog(null)),
+                new EntityListHooks(null, new ModuleLog(null), new HookLedger()),
                 new FeatureInstallState());
         transaction.publish(terminal::get,
                 (generation, activeLoader, activated, isTerminal) -> {
@@ -133,7 +133,7 @@ public final class RuntimeConfigurationTransactionTest {
         PurifierConfig config = new PurifierConfig(
                 temporaryFolder.newFolder(), CacheAtomicWriter.RENAME_REPLACE, log);
         HookInstallPlan plan = HookInstallPlan.from(config, 16);
-        return new FeatureHooks(null, log, config, 16, entityHooks, plan, installState);
+        return new FeatureHooks(null, log, config, 16, entityHooks, plan, installState, new HookLedger());
     }
 
     private static void await(CountDownLatch latch) {

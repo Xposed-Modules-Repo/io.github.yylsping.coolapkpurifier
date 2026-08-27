@@ -19,6 +19,8 @@ final class TargetResolver {
     static final String KEY_RELATED_DATA = "feature.relatedData";
     static final String KEY_SAME_TOPIC_FEED = "feature.sameTopicFeed";
     static final String KEY_DETAIL_SPONSOR = "feature.detailSponsor";
+    /** Class-only target: the reply sponsor holder discovered via lazy class loading. */
+    static final String KEY_REPLY_HOLDER = "feature.replyHolder";
 
     /**
      * Historically observed splash-family activity names. Used as a reflection
