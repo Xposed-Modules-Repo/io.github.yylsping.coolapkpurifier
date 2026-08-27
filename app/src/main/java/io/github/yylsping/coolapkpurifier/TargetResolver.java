@@ -14,7 +14,6 @@ final class TargetResolver {
     static final String KEY_GETTER_ENTITY_ID = "getter.entityId";
     static final String KEY_GETTER_TITLE = "getter.title";
     static final String KEY_GETTER_ENTITY_TYPE = "getter.entityType";
-    static final String KEY_SPLASH_DECISION = "feature.splashDecision";
     static final String KEY_AUTO_COMMENT = "feature.autoComment";
     static final String KEY_TOPIC_RECOMMEND = "feature.topicRecommend";
     static final String KEY_RELATED_DATA = "feature.relatedData";

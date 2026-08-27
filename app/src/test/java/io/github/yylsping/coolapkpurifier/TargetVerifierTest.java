@@ -6,7 +6,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
-import android.content.Context;
 import android.os.Bundle;
 
 import com.coolapk.market.model.AutoValueFeed;
@@ -149,15 +148,6 @@ public final class TargetVerifierTest {
                         "addAutoShowFeedCommentView", String.class)));
     }
 
-    @Test
-    public void splashDecisionRequiresObservedBusinessSignature() throws Exception {
-        assertTrue(TargetVerifier.isSplashDecision(
-                SplashDecisionHelper.class.getMethod(
-                        "shouldShow", Context.class, Object.class, String.class)));
-        assertEquals(false, TargetVerifier.isSplashDecision(
-                SplashDecisionHelper.class.getMethod("unrelatedFlag")));
-    }
-
     public static final class Helper {
         public List<Object> transform(List<Object> source, boolean flag) {
             return source;
@@ -172,18 +162,6 @@ public final class TargetVerifierTest {
         @Override
         protected void onCreate(Bundle savedInstanceState) {
             super.onCreate(savedInstanceState);
-        }
-    }
-
-
-    public static final class SplashDecisionHelper {
-        public static boolean shouldShow(Context context, Object adTypeData,
-                                         String traceId) {
-            return true;
-        }
-
-        public static boolean unrelatedFlag() {
-            return true;
         }
     }
 }

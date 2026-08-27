@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/** Resolves the optional Issue #2 targets and the 15/16 splash decision. */
+/** Resolves the optional Issue #2 targets. */
 final class Issue2Resolver {
     private static final String AUTO_COMMENT_CLASS =
             "com.coolapk.market.view.cardlist.component.RecyclerViewItemFullVisibleControllerKt";
@@ -40,9 +40,6 @@ final class Issue2Resolver {
 
     Map<String, ResolvedTarget> resolve(PurifierConfig config, int coolapkMajor) {
         Map<String, ResolvedTarget> targets = new LinkedHashMap<>();
-        if (coolapkMajor >= 15 && config.isEnabled(PurifierConfig.Feature.SPLASH)) {
-            put(targets, resolveSplashDecision());
-        }
         if (coolapkMajor < 15) {
             return targets;
         }
@@ -63,47 +60,6 @@ final class Issue2Resolver {
             put(targets, resolveDetailSponsorGetter());
         }
         return targets;
-    }
-
-    private ResolvedTarget resolveSplashDecision() {
-        List<MethodData> verified = new ArrayList<>();
-        try {
-            // FullScreenAdUtils is package-obfuscated (kc5.* on 16.6.1), so
-            // first locate the single Kotlin source class globally, then run
-            // the string query only inside that tiny class set.
-            ClassDataList classes = bridge.findClass(FindClass.create()
-                    .matcher(ClassMatcher.create()
-                            .source("FullScreenAdUtils.kt",
-                                    StringMatchType.Equals, false)
-                            .usingStrings("[shouldShowAd] start",
-                                    "everything is fine, show splash",
-                                    "in no ad meantime")));
-            if (!classes.isEmpty()) {
-                MethodDataList methods = bridge.findMethod(FindMethod.create()
-                        .searchInClass(new ArrayList<>(classes))
-                        .matcher(MethodMatcher.create().usingStrings(
-                                "[shouldShowAd] start",
-                                "everything is fine, show splash",
-                                "in no ad meantime")));
-                for (MethodData candidate : methods) {
-                    Method reflected = liveMethod(candidate);
-                    if (reflected != null
-                            && TargetVerifier.isSplashDecision(reflected)) {
-                        verified.add(candidate);
-                    }
-                }
-            }
-            log.info("resolver target=splashDecision sourceClasses=" + classes.size());
-        } catch (Throwable throwable) {
-            log.info("resolver target=splashDecision queryFailed=" + throwable);
-        }
-        log.info("resolver target=splashDecision candidates=" + verified.size()
-                + " descriptors=" + describeMethods(verified));
-        if (verified.size() != 1) {
-            return null;
-        }
-        return methodTarget(TargetResolver.KEY_SPLASH_DECISION,
-                "issue2_splash_strings", verified.get(0));
     }
 
     private ResolvedTarget resolveAutoCommentEntry() {

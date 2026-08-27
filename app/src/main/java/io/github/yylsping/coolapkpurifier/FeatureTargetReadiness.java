@@ -13,11 +13,6 @@ final class FeatureTargetReadiness {
                                 Map<String, ResolvedTarget> targets,
                                 FeatureInstallState installState) {
         List<String> missing = new ArrayList<>();
-        if (coolapkMajor >= 15) {
-            requirePrimaryHook(config, coolapkMajor, targets, installState,
-                    PurifierConfig.Feature.SPLASH,
-                    TargetResolver.KEY_SPLASH_DECISION, missing);
-        }
         requirePrimaryHook(config, coolapkMajor, targets, installState,
                 PurifierConfig.Feature.TOPIC_DEVICE_RECOMMEND,
                 TargetResolver.KEY_TOPIC_RECOMMEND, missing);
@@ -27,10 +22,12 @@ final class FeatureTargetReadiness {
         requireSemanticEvidence(config, coolapkMajor, targets, installState,
                 PurifierConfig.Feature.SAME_TOPIC_FEED,
                 TargetResolver.KEY_SAME_TOPIC_FEED, missing);
-        requirePrimaryOrFallbackEvidence(config, coolapkMajor, installState,
+        requireInstalledHook(config, coolapkMajor, installState,
                 PurifierConfig.Feature.AUTO_COMMENT,
-                TargetResolver.KEY_AUTO_COMMENT, missing);
-        requireRelatedDataFallback(config, coolapkMajor, installState, missing);
+                TargetResolver.KEY_AUTO_COMMENT, false, missing);
+        requireInstalledHook(config, coolapkMajor, installState,
+                PurifierConfig.Feature.RELATED_DATA,
+                TargetResolver.KEY_RELATED_DATA, true, missing);
         return missing;
     }
 
@@ -66,27 +63,18 @@ final class FeatureTargetReadiness {
         }
     }
 
-    private static void requirePrimaryOrFallbackEvidence(
+    private static void requireInstalledHook(
             PurifierConfig config, int coolapkMajor, FeatureInstallState installState,
-            PurifierConfig.Feature feature, String key, List<String> missing) {
+            PurifierConfig.Feature feature, String key, boolean dedicatedHolder,
+            List<String> missing) {
         if (!config.isEffectiveEnabled(feature, coolapkMajor)) {
             return;
         }
-        if (!installState.hasPrimaryHook(key)
-                && !installState.hasFallbackEvidence(key)) {
-            missing.add(key + ":featureFallback");
-        }
-    }
-
-    private static void requireRelatedDataFallback(
-            PurifierConfig config, int coolapkMajor, FeatureInstallState installState,
-            List<String> missing) {
-        if (!config.isEffectiveEnabled(PurifierConfig.Feature.RELATED_DATA, coolapkMajor)) {
-            return;
-        }
-        if (!installState.hasFallbackHook(TargetResolver.KEY_RELATED_DATA)
-                && !installState.hasFallbackEvidence(TargetResolver.KEY_RELATED_DATA)) {
-            missing.add(TargetResolver.KEY_RELATED_DATA + ":featureFallback");
+        boolean installed = dedicatedHolder
+                ? installState.hasFallbackHook(key)
+                : installState.hasPrimaryHook(key);
+        if (!installed) {
+            missing.add(key + (dedicatedHolder ? ":holderHook" : ":primaryHook"));
         }
     }
 }

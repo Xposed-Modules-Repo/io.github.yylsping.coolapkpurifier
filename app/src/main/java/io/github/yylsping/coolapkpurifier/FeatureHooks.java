@@ -99,8 +99,6 @@ final class FeatureHooks {
             installSemanticIfLoadable(loader,
                     "com.coolapk.market.view.ad.SponsorSelfDrawDetailViewHolder");
         }
-        installMethod(targets.get(TargetResolver.KEY_SPLASH_DECISION), loader,
-                expectedGeneration);
         if (plan.resolveAutoComment) {
             installMethod(targets.get(TargetResolver.KEY_AUTO_COMMENT), loader,
                     expectedGeneration);
@@ -495,12 +493,9 @@ final class FeatureHooks {
                     .setId("coolapk-" + key + "-" + Integer.toHexString(
                             method.toGenericString().hashCode()))
                     .intercept(chain -> {
-                        if (!shouldBlock(key)) {
+                        boolean block = shouldBlock(key);
+                        if (!block) {
                             return chain.proceed();
-                        }
-                        if (TargetResolver.KEY_SPLASH_DECISION.equals(key)) {
-                            log.info("blocked splash decision via " + method);
-                            return false;
                         }
                         if (TargetResolver.KEY_AUTO_COMMENT.equals(key)) {
                             return defaultValue(method.getReturnType());
@@ -523,9 +518,6 @@ final class FeatureHooks {
     }
 
     private boolean shouldBlock(String key) {
-        if (TargetResolver.KEY_SPLASH_DECISION.equals(key)) {
-            return config.isEffectiveEnabled(PurifierConfig.Feature.SPLASH, coolapkMajor);
-        }
         if (TargetResolver.KEY_AUTO_COMMENT.equals(key)) {
             return config.isEffectiveEnabled(PurifierConfig.Feature.AUTO_COMMENT, coolapkMajor);
         }

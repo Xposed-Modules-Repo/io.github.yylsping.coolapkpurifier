@@ -119,35 +119,44 @@ public final class FeatureTargetReadinessTest {
         PurifierConfig config = configWithDetail(false);
         config.setEnabled(PurifierConfig.Feature.SPLASH, true);
 
-        assertFalse(FeatureTargetReadiness.missing(config, 14,
-                Collections.emptyMap(), new FeatureInstallState()).stream()
-                .anyMatch(value -> value.startsWith(TargetResolver.KEY_SPLASH_DECISION)));
+        assertTrue(FeatureTargetReadiness.missing(config, 14,
+                Collections.emptyMap(), new FeatureInstallState()).isEmpty());
     }
 
     @Test
-    public void autoCommentRequiresPrimaryOrItsOwnResourceEvidence() throws Exception {
+    public void currentCoolapkUsesActivitySplashBoundaryWithoutDecisionTarget()
+            throws Exception {
+        PurifierConfig config = configWithDetail(false);
+        config.setEnabled(PurifierConfig.Feature.SPLASH, true);
+
+        assertTrue(FeatureTargetReadiness.missing(config, 16,
+                Collections.emptyMap(), new FeatureInstallState()).isEmpty());
+    }
+
+    @Test
+    public void autoCommentRequiresItsBusinessHook() throws Exception {
         PurifierConfig config = configWithDetail(false);
         config.setEnabled(PurifierConfig.Feature.AUTO_COMMENT, true);
         FeatureInstallState missingState = new FeatureInstallState();
         assertTrue(FeatureTargetReadiness.missing(config, 16,
                 Collections.emptyMap(), missingState).contains(
-                TargetResolver.KEY_AUTO_COMMENT + ":featureFallback"));
+                TargetResolver.KEY_AUTO_COMMENT + ":primaryHook"));
 
         FeatureInstallState verified = new FeatureInstallState();
-        verified.markFallbackEvidence(TargetResolver.KEY_AUTO_COMMENT);
+        verified.markPrimaryHook(TargetResolver.KEY_AUTO_COMMENT);
         assertFalse(FeatureTargetReadiness.missing(config, 16,
                 Collections.emptyMap(), verified).stream().anyMatch(
                 value -> value.startsWith(TargetResolver.KEY_AUTO_COMMENT)));
     }
 
     @Test
-    public void relatedDataRequiresHolderOrItsOwnLayoutEvidence() throws Exception {
+    public void relatedDataRequiresItsDedicatedHolderHook() throws Exception {
         PurifierConfig config = configWithDetail(false);
         config.setEnabled(PurifierConfig.Feature.RELATED_DATA, true);
         FeatureInstallState missingState = new FeatureInstallState();
         assertTrue(FeatureTargetReadiness.missing(config, 16,
                 Collections.emptyMap(), missingState).contains(
-                TargetResolver.KEY_RELATED_DATA + ":featureFallback"));
+                TargetResolver.KEY_RELATED_DATA + ":holderHook"));
 
         FeatureInstallState holder = new FeatureInstallState();
         holder.markFallbackHook(TargetResolver.KEY_RELATED_DATA);
@@ -155,11 +164,11 @@ public final class FeatureTargetReadinessTest {
                 Collections.emptyMap(), holder).stream().anyMatch(
                 value -> value.startsWith(TargetResolver.KEY_RELATED_DATA)));
 
-        FeatureInstallState layout = new FeatureInstallState();
-        layout.markFallbackEvidence(TargetResolver.KEY_RELATED_DATA);
-        assertFalse(FeatureTargetReadiness.missing(config, 16,
-                Collections.emptyMap(), layout).stream().anyMatch(
-                value -> value.startsWith(TargetResolver.KEY_RELATED_DATA)));
+        FeatureInstallState primaryOnly = new FeatureInstallState();
+        primaryOnly.markPrimaryHook(TargetResolver.KEY_RELATED_DATA);
+        assertTrue(FeatureTargetReadiness.missing(config, 16,
+                Collections.emptyMap(), primaryOnly).contains(
+                TargetResolver.KEY_RELATED_DATA + ":holderHook"));
     }
 
     private Map<String, ResolvedTarget> detailTargets() {

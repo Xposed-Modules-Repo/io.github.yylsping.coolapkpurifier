@@ -1,7 +1,7 @@
 package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
-import android.app.Instrumentation;
+import android.app.Application;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
@@ -13,11 +13,10 @@ import android.graphics.drawable.RippleDrawable;
 import android.content.res.ColorStateList;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.animation.AnimationUtils;
 import android.widget.FrameLayout;
@@ -28,108 +27,77 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.lang.reflect.Method;
-import io.github.libxposed.api.XposedInterface.ExceptionMode;
-import io.github.libxposed.api.XposedInterface.HookHandle;
-import io.github.libxposed.api.XposedModule;
-
 /** Injects the "酷安净化" entry into Coolapk's Compose settings host. */
 final class SettingsHooks {
     static final String EXIT_MESSAGE = "请重启软件以动态适配更改选项";
     private static final String SIMPLE_ACTIVITY =
             "com.coolapk.market.view.base.SimpleActivity";
 
-    private final XposedModule module;
     private final ModuleLog log;
     private final PurifierConfig config;
     private final int coolapkMajor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final PageStateRegistry<Activity, PageState> injected = new PageStateRegistry<>();
-    private HookHandle resumeHandle;
-    private HookHandle destroyHandle;
-    private HookHandle finishHandle;
-    private HookHandle backHandle;
-    private HookHandle touchHandle;
+    private boolean lifecycleCallbacksInstalled;
 
-    SettingsHooks(XposedModule module, ModuleLog log, PurifierConfig config,
+    SettingsHooks(ModuleLog log, PurifierConfig config,
                   int coolapkMajor) {
-        this.module = module;
         this.log = log;
         this.config = config;
         this.coolapkMajor = coolapkMajor;
     }
 
-    void install() {
-        if (resumeHandle != null) {
+    void install(Context context) {
+        if (lifecycleCallbacksInstalled) {
             return;
         }
         try {
-            Method method = Instrumentation.class.getDeclaredMethod(
-                    "callActivityOnResume", Activity.class);
-            resumeHandle = module.hook(method)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .setId("coolapk-purifier-settings")
-                    .intercept(chain -> {
-                        Object result = chain.proceed();
-                        Object candidate = chain.getArg(0);
-                        if (candidate instanceof Activity) {
-                            Activity activity = (Activity) candidate;
+            Context candidate = context;
+            if (!(candidate instanceof Application) && context != null) {
+                candidate = context.getApplicationContext();
+            }
+            if (!(candidate instanceof Application)) {
+                log.info("settings lifecycle callbacks skipped reason=applicationMissing");
+                return;
+            }
+            Application application = (Application) candidate;
+            application.registerActivityLifecycleCallbacks(
+                    new Application.ActivityLifecycleCallbacks() {
+                        @Override
+                        public void onActivityCreated(Activity activity, Bundle state) {
+                        }
+
+                        @Override
+                        public void onActivityStarted(Activity activity) {
+                        }
+
+                        @Override
+                        public void onActivityResumed(Activity activity) {
                             mainHandler.post(() -> maybeInject(activity));
                         }
-                        return result;
-                    });
-            Method destroy = Instrumentation.class.getDeclaredMethod(
-                    "callActivityOnDestroy", Activity.class);
-            destroyHandle = module.hook(destroy)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .setId("coolapk-purifier-settings-exit")
-                    .intercept(chain -> {
-                        Object candidate = chain.getArg(0);
-                        if (candidate instanceof Activity) {
-                            onActivityDestroyed((Activity) candidate);
+
+                        @Override
+                        public void onActivityPaused(Activity activity) {
                         }
-                        return chain.proceed();
-                    });
-            Method finish = Activity.class.getDeclaredMethod("finish");
-            finishHandle = module.hook(finish)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .setId("coolapk-purifier-settings-finish")
-                    .intercept(chain -> {
-                        Object candidate = chain.getThisObject();
-                        if (candidate instanceof Activity
-                                && handleConfigBack((Activity) candidate)) {
-                            return null;
+
+                        @Override
+                        public void onActivityStopped(Activity activity) {
                         }
-                        return chain.proceed();
-                    });
-            Method onBackPressed = Activity.class.getDeclaredMethod("onBackPressed");
-            backHandle = module.hook(onBackPressed)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .setId("coolapk-purifier-settings-back")
-                    .intercept(chain -> {
-                        Object candidate = chain.getThisObject();
-                        if (candidate instanceof Activity
-                                && handleConfigBack((Activity) candidate)) {
-                            return null;
+
+                        @Override
+                        public void onActivitySaveInstanceState(
+                                Activity activity, Bundle state) {
                         }
-                        return chain.proceed();
-                    });
-            Method dispatchTouchEvent = Activity.class.getDeclaredMethod(
-                    "dispatchTouchEvent", MotionEvent.class);
-            touchHandle = module.hook(dispatchTouchEvent)
-                    .setExceptionMode(ExceptionMode.PROTECTIVE)
-                    .setId("coolapk-purifier-settings-scroll")
-                    .intercept(chain -> {
-                        Object candidate = chain.getThisObject();
-                        Object event = chain.getArg(0);
-                        if (candidate instanceof Activity && event instanceof MotionEvent) {
-                            handleSettingsTouch((Activity) candidate, (MotionEvent) event);
+
+                        @Override
+                        public void onActivityDestroyed(Activity activity) {
+                            SettingsHooks.this.onActivityDestroyed(activity);
                         }
-                        return chain.proceed();
                     });
-            log.info("settings resume/destroy/back hooks installed");
+            lifecycleCallbacksInstalled = true;
+            log.info("settings lifecycle callbacks registered frameworkHooks=0");
         } catch (Throwable throwable) {
-            log.error("settings resume hook install failed", throwable);
+            log.error("settings lifecycle callback registration failed", throwable);
         }
     }
 
@@ -175,10 +143,8 @@ final class SettingsHooks {
             entryParams.rightMargin = dp(activity, 14);
             entryParams.topMargin = originalTop + dp(activity, 14);
             frame.addView(entry, entryParams);
-            PageState state = new PageState(frame, compose, entry, toolbarTitle, originalTop,
-                    shift);
+            PageState state = new PageState(frame, compose, entry, toolbarTitle, originalTop);
             entry.setOnClickListener(view -> showConfigPage(activity, state));
-            state.touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
             injected.put(activity, state);
             log.info("settings entry injected top=" + entryParams.topMargin
                     + " composeShift=" + shift + " coolapkMajor=" + coolapkMajor);
@@ -283,50 +249,6 @@ final class SettingsHooks {
                 + activity.getClass().getName());
     }
 
-    private boolean handleConfigBack(Activity activity) {
-        PageState state = injected.get(activity);
-        if (state == null || !state.inConfig) {
-            return false;
-        }
-        hideConfigPage(activity, state);
-        return true;
-    }
-
-    private void hideConfigPage(Activity activity, PageState state) {
-        View configPage = state.configPage;
-        if (!state.inConfig || configPage == null) {
-            return;
-        }
-        configPage.animate().cancel();
-        state.inConfig = false;
-        state.transitioning = true;
-        state.toolbarTitle.setText("设置");
-        state.compose.setVisibility(View.VISIBLE);
-        state.entry.setVisibility(View.VISIBLE);
-        notifyConfigExit(activity, state);
-        int width = Math.max(state.frame.getWidth(),
-                activity.getResources().getDisplayMetrics().widthPixels);
-        configPage.animate()
-                .translationX(width)
-                .setDuration(240L)
-                .setInterpolator(AnimationUtils.loadInterpolator(activity,
-                        android.R.interpolator.fast_out_slow_in))
-                .setListener(new AnimatorListenerAdapter() {
-                    @Override
-                    public void onAnimationEnd(Animator animation) {
-                        if (configPage.getParent() == state.frame) {
-                            state.frame.removeView(configPage);
-                        }
-                        if (state.configPage == configPage) {
-                            state.configPage = null;
-                        }
-                        state.transitioning = false;
-                    }
-                })
-                .start();
-        log.info("settings config page hidden return=settings");
-    }
-
     private void notifyConfigExit(Activity activity, PageState state) {
         if (state == null || state.exitNotified) {
             return;
@@ -348,41 +270,6 @@ final class SettingsHooks {
         }
         state.dispose();
         log.info("settings page state removed on destroy remaining=" + injected.size());
-    }
-
-    private void setEntryCollapsed(PageState state, boolean collapsed) {
-        if (state.entryCollapsed == collapsed) {
-            return;
-        }
-        state.entryCollapsed = collapsed;
-        FrameLayout.LayoutParams current =
-                (FrameLayout.LayoutParams) state.compose.getLayoutParams();
-        int expectedTop = state.originalComposeTop + (collapsed ? 0 : state.entryShift);
-        if (current.topMargin != expectedTop) {
-            FrameLayout.LayoutParams updated = new FrameLayout.LayoutParams(current);
-            updated.topMargin = expectedTop;
-            state.compose.setLayoutParams(updated);
-        }
-        state.entry.animate().cancel();
-        state.entry.animate()
-                .translationY(collapsed ? -state.entryShift : 0f)
-                .alpha(collapsed ? 0f : 1f)
-                .setDuration(180L)
-                .start();
-        log.info("settings entry scroll state collapsed=" + collapsed);
-    }
-
-    private void handleSettingsTouch(Activity activity, MotionEvent event) {
-        PageState state = injected.get(activity);
-        if (state == null || state.inConfig || state.transitioning || state.entryCollapsed) {
-            return;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            state.touchDownY = event.getY();
-        } else if (event.getActionMasked() == MotionEvent.ACTION_MOVE
-                && event.getY() < state.touchDownY - state.touchSlop) {
-            setEntryCollapsed(state, true);
-        }
     }
 
     @SuppressWarnings("deprecation")
@@ -498,23 +385,18 @@ final class SettingsHooks {
         final View entry;
         final TextView toolbarTitle;
         final int originalComposeTop;
-        final int entryShift;
         View configPage;
         boolean inConfig;
         boolean exitNotified;
         boolean transitioning;
-        boolean entryCollapsed;
-        float touchDownY;
-        int touchSlop;
 
         PageState(FrameLayout frame, View compose, View entry, TextView toolbarTitle,
-                  int originalComposeTop, int entryShift) {
+                  int originalComposeTop) {
             this.frame = frame;
             this.compose = compose;
             this.entry = entry;
             this.toolbarTitle = toolbarTitle;
             this.originalComposeTop = originalComposeTop;
-            this.entryShift = entryShift;
         }
 
         void dispose() {

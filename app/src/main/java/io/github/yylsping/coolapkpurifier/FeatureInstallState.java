@@ -4,15 +4,12 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Keeps discovery evidence, primary semantic hooks and UI fallbacks separate.
- * A fallback can improve degraded behaviour but can never satisfy primary
- * readiness for a resolved target.
+ * Keeps primary business hooks, dedicated holder hooks and semantic evidence separate.
  */
 final class FeatureInstallState {
     private long generation;
     private final Set<String> primaryHooks = new HashSet<>();
     private final Set<String> fallbackHooks = new HashSet<>();
-    private final Set<String> fallbackEvidence = new HashSet<>();
     private final Set<String> semanticEvidence = new HashSet<>();
     private final Set<String> splashClasses = new HashSet<>();
 
@@ -24,7 +21,6 @@ final class FeatureInstallState {
         generation = nextGeneration;
         primaryHooks.clear();
         fallbackHooks.clear();
-        fallbackEvidence.clear();
         semanticEvidence.clear();
         splashClasses.clear();
     }
@@ -49,14 +45,6 @@ final class FeatureInstallState {
         return expectedGeneration == generation && fallbackHooks.add(key);
     }
 
-    synchronized void markFallbackEvidence(String key) {
-        fallbackEvidence.add(key);
-    }
-
-    synchronized boolean markFallbackEvidence(long expectedGeneration, String key) {
-        return expectedGeneration == generation && fallbackEvidence.add(key);
-    }
-
     synchronized void markSemanticEvidence(String key) {
         semanticEvidence.add(key);
     }
@@ -71,10 +59,6 @@ final class FeatureInstallState {
 
     synchronized boolean hasFallbackHook(String key) {
         return fallbackHooks.contains(key);
-    }
-
-    synchronized boolean hasFallbackEvidence(String key) {
-        return fallbackEvidence.contains(key);
     }
 
     synchronized boolean hasSemanticEvidence(String key) {

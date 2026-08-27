@@ -1,7 +1,6 @@
 package io.github.yylsping.coolapkpurifier;
 
 import android.app.Activity;
-import android.content.Context;
 import android.os.Bundle;
 
 import java.lang.reflect.Method;
@@ -51,9 +50,6 @@ final class TargetVerifier {
                             && method.getParameterTypes().length == 1
                             && method.getParameterTypes()[0] == Bundle.class
                             ? null : "splash shape mismatch";
-                case TargetResolver.KEY_SPLASH_DECISION:
-                    return isSplashDecision(method)
-                            ? null : "splash decision shape mismatch";
                 case TargetResolver.KEY_AUTO_COMMENT:
                     return isAutoCommentEntry(method)
                             ? null : "auto comment shape mismatch";
@@ -78,17 +74,6 @@ final class TargetVerifier {
 
     private static boolean isBoolean(Class<?> type) {
         return type == boolean.class || type == Boolean.class;
-    }
-
-    static boolean isSplashDecision(Method method) {
-        Class<?>[] parameters = method.getParameterTypes();
-        return Modifier.isStatic(method.getModifiers())
-                && !Modifier.isAbstract(method.getModifiers())
-                && isBoolean(method.getReturnType())
-                && parameters.length == 3
-                && parameters[0] == Context.class
-                && !parameters[1].isPrimitive()
-                && parameters[2] == String.class;
     }
 
     static boolean isTopicRecommendMethod(Method method) {

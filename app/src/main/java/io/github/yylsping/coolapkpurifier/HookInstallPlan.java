@@ -3,10 +3,8 @@ package io.github.yylsping.coolapkpurifier;
 import java.util.EnumMap;
 import java.util.Map;
 
-/** Immutable startup plan for optional framework fallbacks and semantic resolvers. */
+/** Immutable startup plan for temporary class discovery and semantic resolvers. */
 final class HookInstallPlan {
-    final boolean installLayoutInflater;
-    final boolean installViewTag;
     final boolean installClassLoader;
     final boolean resolveReplyHolder;
     final boolean resolveAutoComment;
@@ -38,19 +36,14 @@ final class HookInstallPlan {
         boolean detail = issueEnabled(enabled, PurifierConfig.Feature.DETAIL_SPONSOR,
                 coolapkMajor);
         return new HookInstallPlan(
-                auto || topic || related || sameTopic || detail,
-                related || sameTopic || detail,
                 reply || auto || topic || related || detail,
                 reply, auto, topic, related, sameTopic, detail);
     }
 
-    private HookInstallPlan(boolean installLayoutInflater, boolean installViewTag,
-                            boolean installClassLoader, boolean resolveReplyHolder,
+    private HookInstallPlan(boolean installClassLoader, boolean resolveReplyHolder,
                             boolean resolveAutoComment, boolean resolveTopicRecommend,
                             boolean resolveRelatedData, boolean resolveSameTopicFeed,
                             boolean resolveDetailSponsor) {
-        this.installLayoutInflater = installLayoutInflater;
-        this.installViewTag = installViewTag;
         this.installClassLoader = installClassLoader;
         this.resolveReplyHolder = resolveReplyHolder;
         this.resolveAutoComment = resolveAutoComment;

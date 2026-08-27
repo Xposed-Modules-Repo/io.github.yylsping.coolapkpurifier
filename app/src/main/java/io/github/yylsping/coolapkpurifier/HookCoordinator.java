@@ -88,8 +88,6 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile PurifierConfig config;
     private volatile FeatureHooks featureHooks;
     private volatile SettingsHooks settingsHooks;
-    private volatile ContentLayoutHooks contentLayoutHooks;
-    private volatile HookInstallPlan hookInstallPlan;
     private volatile int coolapkMajor;
     /** Descriptor map verified/resolved for the current runtime generation only. */
     private final CurrentGenerationTargets generationTargets =
@@ -146,9 +144,13 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     .setId("coolapk-application-attach")
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        Object context = chain.getArg(0);
-                        if (context instanceof Context) {
-                            onApplicationAttached((Context) context);
+                        Object hostApplication = chain.getThisObject();
+                        Object baseContext = chain.getArg(0);
+                        if (hostApplication instanceof Application
+                                && baseContext instanceof Context) {
+                            onApplicationAttached(
+                                    (Application) hostApplication,
+                                    (Context) baseContext);
                         }
                         return result;
                     });
@@ -159,12 +161,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
     }
 
-    private void onApplicationAttached(Context context) {
+    private void onApplicationAttached(Application application, Context baseContext) {
         long start = SystemClock.elapsedRealtime();
-        Context application = context.getApplicationContext();
-        // Some protected Coolapk builds briefly return null here even though
-        // the attach base Context is already usable.
-        appContext = application != null ? application : context;
+        // Application.getApplicationContext() is briefly null on some protected
+        // Coolapk builds. The hooked receiver itself is already attached after
+        // chain.proceed() and is the canonical lifecycle owner.
+        appContext = application != null ? application : baseContext;
         trace = new BootstrapTrace(appContext);
         trace.mark("attachAfter", "context=" + appContext.getPackageName());
         initializeRuntimeConfiguration(appContext);
@@ -321,10 +323,6 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             if (hooks != null) {
                 hooks.beginGeneration(nextGeneration, loader);
                 hooks.installLazyResolvers();
-            }
-            ContentLayoutHooks layouts = contentLayoutHooks;
-            if (layouts != null) {
-                layouts.verifyFeatureFallbacks(nextGeneration);
             }
         });
         ResolutionEpoch.Transition transition = result[0];
@@ -862,17 +860,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         } else {
             missing.addAll(hooks.missingRequiredTargets(targets));
         }
-        ContentLayoutHooks layouts = contentLayoutHooks;
-        HookInstallPlan plan = hookInstallPlan;
-        boolean layoutSelected = plan != null && plan.installLayoutInflater;
-        boolean layoutReady = !layoutSelected || (layouts != null && layouts.isInstalled());
-        if (!layoutReady) {
-            missing.add("feature:layoutInflater");
-        }
-
         boolean legacyCoreReady = ReadinessPolicy.isCoreReady(
                 splashReady, feedHooks, accessorsReady);
-        boolean allRequiredReady = legacyCoreReady && featureTargetsReady && layoutReady;
+        boolean allRequiredReady = legacyCoreReady && featureTargetsReady;
         // generation/loader are parameters supplied from the epoch-held
         // transaction. Touch loader here so future changes cannot silently
         // replace this probe with a coordinator-global loader lookup.
@@ -885,12 +875,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     private boolean areSelectedFeaturesReady(ResolutionSessionContext sessionContext) {
         FeatureHooks hooks = featureHooks;
-        ContentLayoutHooks layouts = contentLayoutHooks;
-        HookInstallPlan plan = hookInstallPlan;
-        boolean layoutSelected = plan != null && plan.installLayoutInflater;
         return isSessionCurrent(sessionContext)
-                && hooks != null && hooks.requiredTargetsReady(currentTargets(sessionContext))
-                && (!layoutSelected || (layouts != null && layouts.isInstalled()));
+                && hooks != null && hooks.requiredTargetsReady(currentTargets(sessionContext));
     }
 
     private List<String> missingSelectedFeatureTargets(
@@ -1343,10 +1329,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     module, log, loaded, loadedMajor,
                     entityListHooks, plan, featureInstallState);
             SettingsHooks loadedSettingsHooks = new SettingsHooks(
-                    module, log, loaded, loadedMajor);
-            ContentLayoutHooks loadedContentLayoutHooks = new ContentLayoutHooks(
-                    module, log, loaded, loadedMajor,
-                    plan, featureInstallState, application.getResources());
+                    log, loaded, loadedMajor);
             final long[] boundGeneration = {0L};
             configurationTransaction.publish(() -> state.isTerminal(),
                     (generation, loader, activated, terminal) -> {
@@ -1359,25 +1342,19 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                         }
                         entityListHooks.setConfig(loaded, loadedMajor);
                         coolapkMajor = loadedMajor;
-                        hookInstallPlan = plan;
                         featureHooks = loadedFeatureHooks;
                         settingsHooks = loadedSettingsHooks;
-                        contentLayoutHooks = loadedContentLayoutHooks;
                         // Publish the initialized marker last.
                         config = loaded;
                     });
-            loadedSettingsHooks.install();
-            loadedContentLayoutHooks.install();
-            if (boundGeneration[0] > 0) {
-                loadedContentLayoutHooks.verifyFeatureFallbacks(boundGeneration[0]);
-            }
+            Context lifecycleContext = currentApplication();
+            loadedSettingsHooks.install(lifecycleContext != null
+                    ? lifecycleContext : application);
             loadedFeatureHooks.installLazyResolvers();
             log.info("configuration initialized coolapkMajor=" + loadedMajor
                     + " pending=" + loaded.pendingKind()
                     + " revision=" + loaded.revision()
-                    + " hookPlan=inflater:" + plan.installLayoutInflater
-                    + ",viewTag:" + plan.installViewTag
-                    + ",classLoader:" + plan.installClassLoader
+                    + " hookPlan=classLoader:" + plan.installClassLoader
                     + " generation=" + boundGeneration[0]
                     + " terminal=" + state.isTerminal()
                     + " lazyLogicalEnabled="

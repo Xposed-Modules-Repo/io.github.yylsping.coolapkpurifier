@@ -9,12 +9,10 @@ import java.util.EnumMap;
 
 public final class HookInstallPlanTest {
     @Test
-    public void defaultConfigurationAvoidsIssue2FrameworkHotPaths() {
+    public void defaultConfigurationUsesOnlyTemporaryReplyDiscovery() {
         EnumMap<PurifierConfig.Feature, Boolean> enabled = defaults();
         HookInstallPlan plan = HookInstallPlan.from(enabled, 16);
 
-        assertFalse(plan.installLayoutInflater);
-        assertFalse(plan.installViewTag);
         assertTrue(plan.installClassLoader);
         assertTrue(plan.resolveReplyHolder);
         assertFalse(plan.resolveAutoComment);
@@ -22,29 +20,23 @@ public final class HookInstallPlanTest {
     }
 
     @Test
-    public void onlyT1InstallsInflaterAndItsLazyResolver() {
+    public void onlyT1InstallsItsLazyResolver() {
         HookInstallPlan plan = only(PurifierConfig.Feature.AUTO_COMMENT);
-        assertTrue(plan.installLayoutInflater);
-        assertFalse(plan.installViewTag);
         assertTrue(plan.installClassLoader);
         assertTrue(plan.resolveAutoComment);
         assertFalse(plan.resolveTopicRecommend);
     }
 
     @Test
-    public void onlyT2InstallsInflaterAndSemanticResolver() {
+    public void onlyT2InstallsSemanticResolver() {
         HookInstallPlan plan = only(PurifierConfig.Feature.TOPIC_DEVICE_RECOMMEND);
-        assertTrue(plan.installLayoutInflater);
-        assertFalse(plan.installViewTag);
         assertTrue(plan.installClassLoader);
         assertTrue(plan.resolveTopicRecommend);
     }
 
     @Test
-    public void onlyT3InstallsDedicatedHolderAndBothLayoutFallbacks() {
+    public void onlyT3InstallsDedicatedHolderDiscovery() {
         HookInstallPlan plan = only(PurifierConfig.Feature.RELATED_DATA);
-        assertTrue(plan.installLayoutInflater);
-        assertTrue(plan.installViewTag);
         assertTrue(plan.installClassLoader);
         assertTrue(plan.resolveRelatedData);
         assertFalse(plan.resolveDetailSponsor);
@@ -53,17 +45,13 @@ public final class HookInstallPlanTest {
     @Test
     public void onlyT4NeedsNoGlobalClassLoaderHook() {
         HookInstallPlan plan = only(PurifierConfig.Feature.SAME_TOPIC_FEED);
-        assertTrue(plan.installLayoutInflater);
-        assertTrue(plan.installViewTag);
         assertFalse(plan.installClassLoader);
         assertTrue(plan.resolveSameTopicFeed);
     }
 
     @Test
-    public void onlyT5InstallsItsDedicatedFallbacks() {
+    public void onlyT5InstallsItsBusinessHooks() {
         HookInstallPlan plan = only(PurifierConfig.Feature.DETAIL_SPONSOR);
-        assertTrue(plan.installLayoutInflater);
-        assertTrue(plan.installViewTag);
         assertTrue(plan.installClassLoader);
         assertTrue(plan.resolveDetailSponsor);
         assertFalse(plan.resolveRelatedData);
@@ -78,8 +66,6 @@ public final class HookInstallPlanTest {
             }
         }
         HookInstallPlan plan = HookInstallPlan.from(enabled, 16);
-        assertTrue(plan.installLayoutInflater);
-        assertTrue(plan.installViewTag);
         assertTrue(plan.installClassLoader);
         assertTrue(plan.resolveAutoComment);
         assertTrue(plan.resolveTopicRecommend);
@@ -93,8 +79,6 @@ public final class HookInstallPlanTest {
         EnumMap<PurifierConfig.Feature, Boolean> enabled = allOff();
         enabled.put(PurifierConfig.Feature.DETAIL_SPONSOR, true);
         HookInstallPlan plan = HookInstallPlan.from(enabled, 14);
-        assertFalse(plan.installLayoutInflater);
-        assertFalse(plan.installViewTag);
         assertFalse(plan.installClassLoader);
     }
 
