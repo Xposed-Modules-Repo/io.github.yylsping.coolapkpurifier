@@ -2,11 +2,11 @@
 
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
 
-当前本地候选为 **2.2.1 / versionCode 11，尚未发布**：包含 Issue #5 Mode A-ZF 和发布加固，正常 READY 清理完成后不保留 framework Hook。历史回归目前按 AGENTS.md 暂停在 16.5.1 的 Reply 目标不可达问题，**RELEASE_READY=NO**。实际验收范围、候选哈希及后续项见 [发布加固检查点](issue5_mode_a_zf_release_hardening_report.md)；前阶段记录见 [A-ZF 整改报告](issue5_mode_a_zf_refactor_report.md)。这项工程验收不代表已证明服务端风控问题消失。
+当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF 和发布加固，正常 READY 清理完成后不保留 framework Hook。已用同一候选完成 15.9.0 / 16.5.1 / 16.6.1 本轮实机回归；**16.5.1 / 16.6.1 默认开启的 Reply 专用过滤为 UNAVAILABLE，当前不生效**。实际范围、候选哈希及限制见 [发布加固报告](issue5_mode_a_zf_release_hardening_report.md) 和 [2.2.1 发布说明](release-notes-2.2.1.md)；前阶段记录见 [A-ZF 整改报告](issue5_mode_a_zf_refactor_report.md)。这项工程验收不代表已证明服务端风控问题消失。
 
 ## 功能
 
-- 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。
+- 在酷安原生“设置”列表首部注入“酷安净化”入口；所有选项直接持久化到酷安 `files/coolapk_purifier_config.json`。设置页面每次 resume 在有限窗口内等待视图就绪，成功或 pause/destroy 后停止，修复反复进入时入口缺失的问题。
 - 默认去除启动/开屏广告和全屏广告。
 - 默认去除首页信息流广告与赞助卡片。
 - 默认启用帖子回复区及评论赞助过滤；本轮 15.9.0 的 Reply 目标安装、持久缓存和重启读取通过，16.5.1 / 16.6.1 的专用 Reply Holder 无法通过当前运行时 loader 加载，专用 Hook 为 UNAVAILABLE。设置页和日志独立显示本次启动状态，不应将 core READY 视为所有已选功能生效，也不会自动关闭用户开关。
@@ -41,11 +41,11 @@
 | --- | --- |
 | 目标应用 | 酷安（包名 `com.coolapk.market`），运行时动态适配，不按版本分支 |
 | 2.2.1 默认功能 smoke 已完成 | 15.9.0；专用 Reply sponsor 阳性移除未自然触发，不声明全场景覆盖 |
-| 2.2.1 本轮部分回归 | 16.5.1 / 16.6.1：核心 READY、零 framework、正常浏览通过；Reply UNAVAILABLE，完整矩阵尚未收尾 |
+| 2.2.1 本轮带限制通过 | 16.5.1 / 16.6.1：核心 READY、零 framework、正常浏览与设置通过；Reply UNAVAILABLE。最终 16.6.1 已完成 hit×2 / miss×1 |
 | 历史曾验证、本轮未重新验证 | 13.1.1 / 16.1.2；本地没有对应 APK |
 | Android | 9（API 28）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
-| 本地候选版本 | 2.2.1（versionCode 11），尚未发布、待继续验收 |
+| 本地候选版本 | 2.2.1（versionCode 11），本地自主验收通过，等待用户人工验收，尚未发布 |
 
 模块不按酷安小版本硬编码业务分支。版本适配由 DexKit 动态解析与稳定语义锚点、资源名及受控 framework fallback 组合完成；其中 fallback 只在对应功能启用时安装，并不被视为绝对稳定接口。已实机验证版本代表测试覆盖，不构成对未来或其他版本的绝对兼容保证。若新版本功能失效，请先查看目标应用内：
 
