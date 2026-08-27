@@ -77,6 +77,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final SessionScheduler sessionScheduler = new SessionScheduler();
     private final AtomicBoolean bootstrapRetired = new AtomicBoolean();
     private final AtomicBoolean attachHookRetired = new AtomicBoolean();
+    private final AtomicBoolean attachUnhookExecuted = new AtomicBoolean();
     /** Dedicated retry lane: mainHandler is drained by terminal cleanup. */
     private volatile HandlerThread replyRetryThread;
     private volatile Handler replyRetryHandler;
@@ -232,7 +233,16 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         mainHandler.post(() -> retireApplicationAttachNow("handoffComplete"));
     }
 
+    /**
+     * Idempotent unhook of the bootstrap attach handle. The handoff posts it
+     * to the main looper, but terminal cleanup drains mainHandler — on a
+     * cache-hit boot READY can beat the posted message — so cleanupTerminal
+     * also invokes this directly. The second invocation is a no-op.
+     */
     private void retireApplicationAttachNow(String reason) {
+        if (!attachUnhookExecuted.compareAndSet(false, true)) {
+            return;
+        }
         int unhooked = 0;
         int failed = 0;
         List<HookHandle> retained = new ArrayList<>();
@@ -1234,6 +1244,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         runtimeEpoch.terminalizeActive();
         sessionScheduler.cancelPending();
         mainHandler.removeCallbacksAndMessages(null);
+        // A cache-hit READY can reach terminal before the posted handoff
+        // retire runs; the drain above just cancelled it, so retire here.
+        retireApplicationAttachNow("terminalCleanup:" + state);
         RuntimeDexObserver.CloseResult runtimeWatcherResult = runtimeDexObserver.close();
         FeatureHooks hooks = featureHooks;
         LazyHookRegistry.RetireResult featureLazyResult = hooks == null
