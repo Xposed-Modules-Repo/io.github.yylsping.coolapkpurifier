@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.content.pm.PackageInfo;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -79,6 +80,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     /** Dedicated retry lane: mainHandler is drained by terminal cleanup. */
     private volatile HandlerThread replyRetryThread;
     private volatile Handler replyRetryHandler;
+    private volatile Application.ActivityLifecycleCallbacks replyRetryLifecycle;
     private int replyRetryAttempt;
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
@@ -1395,7 +1397,11 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
      * loadClass hooks are retired at READY, so bounded plain Class.forName
      * retries on a dedicated thread install the holder once its dex chunk is
      * appended and persist it for the next (fully cached, zero-framework)
-     * startup. No framework hook is involved at any point.
+     * startup. The reply dex chunk typically appears only after the user
+     * opens a comment section, so a plain ActivityLifecycleCallbacks observer
+     * (the same Android-API mechanism the Settings entry uses — not an Xposed
+     * hook) retries on every activity resume and unregisters itself on
+     * success. No framework hook is involved at any point.
      */
     private void scheduleReplyDiscoveryRetry() {
         FeatureHooks hooks = featureHooks;
@@ -1414,6 +1420,43 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 handler = replyRetryHandler;
             }
         }
+        if (replyRetryLifecycle == null
+                && appContext instanceof Application) {
+            replyRetryLifecycle = new Application.ActivityLifecycleCallbacks() {
+                @Override
+                public void onActivityResumed(Activity activity) {
+                    attemptReplyInstallFromUi(
+                            "activityResumed:" + activity.getClass().getSimpleName());
+                }
+
+                @Override
+                public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
+                }
+
+                @Override
+                public void onActivityStarted(Activity activity) {
+                }
+
+                @Override
+                public void onActivityPaused(Activity activity) {
+                }
+
+                @Override
+                public void onActivityStopped(Activity activity) {
+                }
+
+                @Override
+                public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
+                }
+
+                @Override
+                public void onActivityDestroyed(Activity activity) {
+                }
+            };
+            ((Application) appContext).registerActivityLifecycleCallbacks(
+                    replyRetryLifecycle);
+            log.info("reply retry lifecycle observer registered");
+        }
         if (!ReplyDiscoveryRetryPolicy.shouldRetry(
                 hooks.isReplyHolderSelected(), hooks.isReplyHolderInstalled(),
                 replyRetryAttempt)) {
@@ -1424,6 +1467,40 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         handler.postDelayed(this::runReplyDiscoveryRetry, delay);
         log.info("reply retry scheduled attempt=" + (replyRetryAttempt + 1)
                 + " delayMs=" + delay);
+    }
+
+    private void attemptReplyInstallFromUi(String source) {
+        FeatureHooks hooks = featureHooks;
+        if (hooks == null || state != BootstrapState.READY
+                || !hooks.isReplyHolderSelected() || hooks.isReplyHolderInstalled()) {
+            unregisterReplyRetryLifecycle("inactiveOrDone");
+            return;
+        }
+        boolean installed = false;
+        try {
+            installed = hooks.tryDirectReplyInstall();
+        } catch (Throwable throwable) {
+            log.error("reply retry ui attempt failed", throwable);
+        }
+        if (installed) {
+            log.info("reply retry installed=true source=" + source);
+            unregisterReplyRetryLifecycle("installed");
+            quitReplyRetryThread("installed");
+        }
+    }
+
+    private void unregisterReplyRetryLifecycle(String reason) {
+        Application.ActivityLifecycleCallbacks observer = replyRetryLifecycle;
+        if (observer == null || !(appContext instanceof Application)) {
+            return;
+        }
+        try {
+            ((Application) appContext).unregisterActivityLifecycleCallbacks(observer);
+            replyRetryLifecycle = null;
+            log.info("reply retry lifecycle observer removed reason=" + reason);
+        } catch (Throwable throwable) {
+            log.error("reply retry lifecycle unregister failed", throwable);
+        }
     }
 
     private void runReplyDiscoveryRetry() {
@@ -1441,6 +1518,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         replyRetryAttempt++;
         if (installed) {
             log.info("reply retry installed=true attempt=" + replyRetryAttempt);
+            unregisterReplyRetryLifecycle("installed");
             quitReplyRetryThread("installed");
             return;
         }
@@ -1450,9 +1528,11 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             long delay = ReplyDiscoveryRetryPolicy.delayFor(replyRetryAttempt);
             replyRetryHandler.postDelayed(this::runReplyDiscoveryRetry, delay);
         } else {
-            log.info("reply retry exhausted attempts=" + replyRetryAttempt
-                    + " nextProcess=rediscovery");
-            quitReplyRetryThread("exhausted");
+            // Timed lane exhausted; the lifecycle observer keeps retrying on
+            // every activity resume until the comment-section dex appears.
+            log.info("reply retry timed lane exhausted attempts=" + replyRetryAttempt
+                    + " lifecycleObserver=active");
+            quitReplyRetryThread("timedExhausted");
         }
     }
 
