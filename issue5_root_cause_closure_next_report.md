@@ -631,20 +631,41 @@ live.lite 组件下发/更新（Zeus 组件加载）
 ```
 
 - "为何 08-26 恰好激活" → **CONFIRMED**：live.lite 组件 08-26 10:42-43 首次下发初始化
-  （前轮 §7 时间线 + 本轮 init 链），激活即采集上报；组件 08-27
-（前轮 §7 时间线 + 本轮 init 链），激活即采集上报；组件 08-27 21:30 更新至 version-211448
-  后初始化链不变。
+  （前轮 §7 时间线 + 本轮 init 链），激活即采集上报；组件 08-27 21:30 更新至
+  version-211448 后初始化链不变。
 - 展示层（Priority D）、NetHT 结论（§1-§4、附录 A）：零改动。
 
-## B.6 What Remains UNKNOWN（增量）
+## B.6 补充闭合（第六会话续，同晚）
 
-1. x-bdms 上报具体 host（配置驱动；无阳性自然抓包前不收敛；如抓须标
-   `CAPTURE_ENVIRONMENT=PROXIED`）。
-2. module 4 语义（懒注册，参数 0x1000009）。
+1. **libPglbizssdk_ml.so ELF 级差分（E3，离线 dynsym 对比，无需 IDB）**：
+   - 导出仅 `JNI_OnLoad`（metasec_ml 另有 MSModuleCreator/MSPBDataHelper 导出）；
+   - 导入 130 vs 135；**Pglbizssdk 完全没有 socket/connect/bind/sendto/recvfrom/inet_addr**
+     ——native 侧连本地网络探测都没有，采集纯靠 faccessat/fstat/__system_property_get/
+     文件检查 + JNI；metasec_ml 独有 bind/connect/sendto/recvfrom/inet_addr/uname/getenv
+     （对应 B.1 本地探针）。
+   - 判定：同族瘦身高变体（1.1MB vs 2.0MB）；**B.7 段的"本地端口/服务探测"仅 metasec_ml 有**。
+2. **上报 host 的设备侧可读性核查（E3）**：`pangle_com.byted.live.lite/server.json`（可读）
+   = TTNet 配置（dispatch host 仅 tnc0-*.zijieapi.com、webcast5-open-lf.douyin.com，无 mssdk 专用
+   host）；keva `hybrid_settings.blk`（可读）仅含 lynx 设置；`tt_net_config.config` 仅 device_id/tnc
+   etag。→ **mssdk 上报 host 不存在于本设备任何可读存储**；且 `g/a/a/ak` 的请求 URL 参与方
+   包括 native `matrix.a` 返回值（URL/路径可能由 native 产出）。B.6.1 边界进一步收紧。
+3. **module 4（补充）**：工厂 sub_FD200 受全局状态门（off_1F6EF8/1F6F00 非零才构建）控制
+   ——懒注册还依赖某个 init 期状态；工厂链为多级混淆间接跳转，语义维持 UNKNOWN。
+4. **last_rp_time 节流值**：键串全部运行时栈构造解码（IDB 无明文），定位消费点需重做
+   五解码器 × 92 构造器常量恢复（前轮方法）；当前会话未执行——方法已记录，留待有需要时。
+5. **本机登录态复查（E3）**：shared_prefs（857 项）与 databases 均无账号/user/session 存储
+   → 设备仍为未登录态；§6.2（NetHT 加载是否登录态触发）仍等待用户自行登录后复测 maps。
+
+## B.6U What Remains UNKNOWN（增量，更新后）
+
+1. x-bdms 上报具体 host——已排除"设备可读存储"来源（见 B.6.2）；剩余可能：native 产出或
+   服务器下发后仅存内存。无阳性自然抓包前不收敛；如抓须标 `CAPTURE_ENVIRONMENT=PROXIED`。
+2. module 4 语义（懒注册 + 状态门控，参数 0x1000009；工厂链多级混淆）。
 3. libmetasec_ml 内 RegisterNatives 注册表全量展开（Java 侧已闭环，边际收益低）。
 4. `.mss_442656…`（33KB）内容（SELinux 拒读；未证实是否 mssdk_riskapp_db）。
-5. libPglbizssdk_ml.so 与 libmetasec_ml.so 的采集项逐项差分（同构家族，未逐项比对）。
-6. metasec 自身周期上报间隔（"last_rp_time" 节流存在，具体值 UNKNOWN）。
+5. libPglbizssdk_ml 函数级采集项清单（ELF 级差分已闭合，见 B.6.1；函数级需换 IDB，暂缓）。
+6. metasec 自身周期上报间隔（B.6.4 方法已记录）。
+7. **NetHT 加载/初始化触发条件**（继承主报告 UNKNOWN #10）——等待用户登录后复测。
 
 ## B.7 Module Impact
 
