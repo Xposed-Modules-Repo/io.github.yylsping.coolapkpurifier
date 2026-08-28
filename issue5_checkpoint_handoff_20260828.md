@@ -5,6 +5,12 @@
 > 每个 Pangle 广告请求、.msdata/mssdk/ml 实证、新检测面 JNI vtable 探针），详见
 > `issue5_root_cause_closure_next_report.md` **附录 B**——接手者请先读附录 B，勿重做 metasec 线。
 > 剩余 UNKNOWN 见附录 B.6。
+>
+> **【第六会话续 2 更正】**：①设备**实际已登录**（酷友44002572）——本文件 §3.6"疑似未登录态"
+> 系误判，§6.2 登录复测**已完成**：登录态真实浏览后 NetHT 仍零加载（附录 B.9.2），"登录态触发"
+> 假设推翻；②NetHT 调用者闭合 = `com.coolapk.market.manager.NetEaseProtectSDKManager` + 并行
+> 数链魔方 SDK（cn.shuzilm.core），productId YD00000551137681 / 'PostToken.productId' 配置键
+> （附录 B.9.3）；③触发门具体键仍 UNKNOWN（B.9.4）。
 
 > 用途：后续模型直接接手 Issue #5 根因证据链闭合任务。本文自包含关键事实、资产、工具链与下一步，
 > 但**仓库内最新报告永远优先于本文快照**。工作区：`D:\Python Worm\coolapk-purifier`。

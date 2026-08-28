@@ -696,3 +696,67 @@ FOUND_DIRECT_EDGE = NO
   `.tmp_audit/native/libPglbizssdk_ml.so`（1,137,040 B，自设备 version-7805 拉取）。
 - 设备（只读）：`.msdata/mssdk/ml` 文件名+时间戳表、live.lite 数据目录时间戳、pid 8234 maps
   pangle 零映射观测。
+
+## B.9 第六会话续 2：登录态更正与 NetHT 触发条件研究（UNKNOWN #10 攻坚）
+
+### B.9.1 【更正】设备实际为登录态（E3，UI 截图实证）
+
+前轮（§3.6 / A.4）"当前疑似未登录态（无 user/session pref）"**系误判**：登录态存储不在
+可读 pref 文件名名单内（857 个 pref 中无 user/session/account 命名；内容受 SELinux 保护
+不可读）。UI 截图（`.tmp_audit/login_check.png`）确认：已登录 **酷友44002572**（Lv.0，
+90/300 EXP，0 动态/关注/粉丝，含"账户不安全请设置密码与邮箱"提示条）。
+
+### B.9.2 登录态 NetHT 阴性实证（E3，推翻"登录态触发"假设）
+
+观测会话：pid 8234（19:14 起，登录态），真实浏览：首页 feed 滑动 6 屏 + 打开帖子详情 +
+评论区滑动 4 屏（截图 feed_check.png / detail_check.png 证实内容真实渲染），等待后复查：
+
+- maps：0x64d378–0xab6330（libNetHTProtect）**始终零映射**；唯一加载的壳内安全组件仍是
+  libnesec（0x0/0x483b000/0x483c000/0x484b000）+ 常规 umeng/auth/httpdns/ucrash/xgVipSecurity；
+- logcat（--pid）：`nuid|htprotect|netht|shuzilm` **0 条**；
+- Pangle/live.lite 组件映射同样为 0（懒加载结论再证）。
+
+→ **"NetHT 加载疑似登录相关"假设被推翻**。判定：NetHT 加载由业务侧门控（服务端配置键或
+特定业务流程），与登录态无必然关系。与旧观察"DDI 开关后 x-app-device 出现 64-char 扩展
+字段"（早期 P3/D5 轮）拼合：开关性质，当前会话该门为关。
+
+### B.9.3 NetHT 业务调用者闭合（E3，runtime DEX 迷你解析器）
+
+`main_useDDI.dex`（nesec 运行时 DEX dump，androguard 解析失败，改手工 DEX 解析）：
+
+- **调用者类 = `com.coolapk.market.manager.NetEaseProtectSDKManager`**（真实业务类名，含
+  协程链 `initSDKAndID$1 / initializeDeviceIDInternal$1/$2$deviceID$1 / onRealInit$1/$2$1/$2`；
+  类簇内另含 OaidManager 的 OAID 证书下载逻辑：`com.coolapk.market.cert.pem`、
+  "Oaid证书下载成功，保存MD5"/"Oaid证书下载失败"）；
+- 并存独立 SDK：**数链魔方 `cn.shuzilm.core`（Main/Listener/BuildConfig）** +
+  `com.coolapk.market.manager.ShuzilmSDKManager`（getSessionSync/initID/postEventAndGetSessionID/
+  updateRetryJobStatus）——数链魔方是与 NetHT 并行的另一设备风险 SDK，此前报告中
+  X-App-Device 链的 "SHUZILM" 串归属至此闭合；
+- HTProtect 封装（混淆类 `Lඞ;`）持有：**productId = "YD00000551137681"**（易盾产品号）、
+  配置键 **"PostToken.productId"**、日志 tag "shuzilm "、"getToken result: token:"——
+  与 P3 轮 PostToken/X-App-Device/nuid 链完全对齐；
+- 该业务管理器**不在静态壳 dex 与业务 restored dex**（两者 htprotect 引用均为 0），
+  全部位于运行时 DEX——与 nesec 加壳模型一致；
+- dump 内部分 class_def 破损（insns_size 乱值），LoginCheckManager 与 NetEaseProtect 的
+  调用边归属置信度受限（E1-E2）：观察到 LoginCheckManager/KSDocHelper/ClearCacheHelper
+  对管理器 lambda 的 invoke 位点，但不作为最终结论。
+
+### B.9.4 UNKNOWN #10 更新后状态
+
+```text
+NetHT 加载/初始化触发条件：
+  - 登录态触发         → 已排除（B.9.2，E3 阴性）
+  - 调用者身份         → 已闭合（B.9.3，E3）：NetEaseProtectSDKManager（+ 并行数链魔方 SDK）
+  - 触发门具体键/当前值 → UNKNOWN（业务侧配置门；需门开时的会话或 main_useDDI 完整反编译）
+```
+
+对根因矩阵：hypothesis #2（服务端 policy/rollout）再获结构性支撑——NetHT 通道是否在场
+由业务配置门决定，客户端代码恒在；metasec 线（B.1-B.5）不变。
+
+### B.9.5 产物补充
+
+- `.tmp_audit/ms_java/htprotect_dex_scan.txt` / `htprotect_callers2.txt` / `htprotect_callers3.txt`
+- `.tmp_audit/ms_java/mini_dex_callers.txt` / `nepsm_details2.txt` / `nepsm_callers.txt` /
+  `logincheck_detail.txt` / `nepsm_class.txt`（main_useDDI.dex 迷你解析器系列输出）
+- 截图：`login_check.png`（我的页-已登录）、`feed_check.png`、`detail_check.png`
+- maps 快照：`maps_8234_evening.txt` / `maps_8234_after_scroll.txt` / `maps_8234_final.txt`
