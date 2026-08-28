@@ -760,3 +760,113 @@ NetHT 加载/初始化触发条件：
   `logincheck_detail.txt` / `nepsm_class.txt`（main_useDDI.dex 迷你解析器系列输出）
 - 截图：`login_check.png`（我的页-已登录）、`feed_check.png`、`detail_check.png`
 - maps 快照：`maps_8234_evening.txt` / `maps_8234_after_scroll.txt` / `maps_8234_final.txt`
+
+---
+
+# 附录 C：libNetHTProtect 记录注册表写入侧与配置应用通路（第六会话，IDB 切回后）
+
+分析时间：2026-08-28 深夜（第六会话续）。工具：IDA Pro MCP（用户已切回
+`libNetHTProtect.so.i64`）。只读 + rename/comment 元数据已保存；未 patch 字节。
+目标 = 第五会话遗留 UNKNOWN #2（记录注册表 key 203695656 的写入者）与 #4
+（sub_250410/sub_25057C 定时器内容），顺带核实第五会话"探针门不可翻转"结论在
+新发现的配置应用通路下是否仍然成立。
+
+## C.1 注册表结构（E3）
+
+- 全局单例：`netht_record_mgr_holder_get`（0x9FAE4，全局 `qword_46DAD8`，24B holder +
+  1896B 管理对象）；`netht_record_mgr_obj`（0x9FB8C）= holder+16。
+- `netht_key_to_registry_offset`（0x9B83C）= **键→偏移映射器**：~40 个整型键各映射到管理对象
+  内一个容器（+48/+96/+144/…/+1800）。**key 203695656 → +48**（black_module 扫描器读的容器，
+  记录 40 字节步长，类型 tag 0x4204F8CA = 非常规路径 APK）。
+- 第五会话"约 20+ 电池成员读 key 203695656"需精确化：直接以该键调用映射器的**只有
+  black_module 扫描器一处**；其余电池成员各自使用不同键/容器（每个键 = 独立注册表）。
+
+## C.2 写入侧闭合（E3）——三条路径全部汇聚于 netht_command_batch_apply
+
+`netht_command_batch_apply`（0x30D808，已更名）= **命令批处理器**：
+- 入参 (registryObj, payload, override)；payload 经 sub_100EDC 解析出状态码；
+- **code 200** → 遍历类型化命令列表：
+  - **type 5 → 配置应用**：`netht_config_commands_apply`（0x2617D0）作用于配置单例
+    （getter sub_26173C → `qword_4C26E0`）+ `netht_config_normalize`（0x261D00）规范化；
+  - **type 9 → 记录插入**：`netht_record_cmd_verify_insert`（0x79758，MD5 校验
+    `netht_payload_verify_md5`/0x79824 后）→ `netht_record_insert_wrapper`（0x9FB94）→
+    `netht_record_json_insert`（0x9FDB0，解析含 **"version"** 字段的 JSON 记录，插入管理器
+    map，更新管理对象 +384 序列号）；
+  - **type 14** → 其它操作（sub_230C58/sub_7AEEC）；
+- **code 5509** → 清 ctx+396；code 非 200 → 错误串（栈解码 "inmt data ..."）。
+
+**三条喂入路径**（全部 E3）：
+
+1. **ioctl selector 16（Java 注入）**：0x246878（跳转表 case 16，注释确认）→ glue vtable
+   +0x98 取串 → `netht_hash_to_registry`（0x30CF8C，按参数 1 哈希选目标容器）→
+   `netht_command_batch_apply` → 成功写 **ctx+392 = 0** / 失败 -1。
+   ——第五会话 ioctl 表"selector 16 写 ctx+392 状态字"就此完全解开：**selector 16 =
+   Java 运行时下发命令批/记录**（酷安侧 NetEaseProtectSDKManager 经 HTProtect wrapper 可达）。
+2. **本地伪装资源加载**：`netht_registry_payload_loader`（0x241D20，**唯一调用者 = 探针调度器
+   sub_2483A8**）：先试文件 `<vtable+8 前缀>/home_button_*.xml`（栈解码路径），失败则经组件
+   AssetManager 读 **`assets/home_button_colorful3.xml`（伪装名）**；尾部 16 字节 MD5 校验
+   → 解密 → 命令批应用 → 同样写 ctx+392。**本设备实测不存在该文件**（酷安 base.apk、
+   Pangle 两组件 APK、app files 目录均无——E3 阴性，与 NetHT 未加载、门关一致）。
+3. **跨注册表传播**：`netht_registry_cross_propagate`（0x230BF8）：从键 1207439958 的注册表
+   取 JSON，提取键 "/v4/c"（栈解码）→ 命令批应用。
+
+第五会话"写入者 UNKNOWN（候选：文件访问拦截层/Java ioctl 事件/其它探针）"就此闭合：
+**无文件访问拦截；注册表由"命令批"数据驱动**（Java ioctl 16 / 伪装资源文件 / 跨注册表传播）。
+
+## C.3 配置应用通路的精确边界（E3，强化第五会话结论）
+
+`netht_config_commands_apply` 解析类型化命令（type 0 = cfg+48 map 删项，type 1/2 = map
+写项），随后 `netht_config_normalize` 对 **~50 个数值字段做范围钳制**（写入集合实证）：
+
+- 间隔字段：cfg[84]（电池间隔）、cfg[88]（30min 定时器）、cfg[132]（10min 定时器）
+  钳制 **[1,60] 分钟**；cfg[792]/[804]/[836]/[416] 等阈值/计数钳制；
+- 模式字段：cfg[336]/[340]/[344]（installedApk 模式族）钳制 {1..4}、默认 2；
+  cfg[300]±数组（a1[16..20]，偏移 256–324）逐元素钳到 2；
+- map 字符串项：cfg+48/+24/+8 三个映射的增删；
+- 附：type-5 附带 `netht_cmd_open_app_settings`（0x263388，栈解码
+  "/android_setting_info_game19…"）——引导宿主跳转应用设置页的命令，非门写。
+
+**探针门字节核对（本轮逐项核对写入集合）**：788/800/808/809/821/823/825/840
+**全部不在 sub_261D00 与两个 map 处理器（0x2618E4/0x261AC8）的写入偏移集合内**。
+第五会话结论"探针门 ctor 一次写、库内不可翻转"**在新的配置应用通路证据下仍然成立**，
+且从"未发现写者"升级为"写者已定位、其写入白名单不含门"。
+
+> 修正说明：第五会话 §2.4"单例 getter sub_26173C 全库仅 4 处引用"表述的是全局
+> `qword_4C26E0` 的数据引用（init flag/alloc/ctor/store）；getter 函数本身的 code 调用点
+> 实为 **100 处**（含本轮新定位的 netht_command_batch_apply type-5 路径、apk parser、
+> 全部电池成员）。扫描 A（调用点后 10 条指令索引式 STRB = 0）不受影响。
+
+## C.4 定时器内容闭合（E3，UNKNOWN #4 关闭）
+
+- **`netht_battery_sweep_30min`（0x250410，30 分钟定时器）**：顺序执行 **16 个电池成员**
+  （loc_41ED0/415CC/299FC/3A8B8/47ED8/3CCF0/[cfg[617] 门] 4A5EC/54A6C/3C030/
+  [cfg[705] 门] 49410/51688/28700/462B0/4D5EC/580C4/51E34）；若 cfg[678]（默认 0 = 关）
+  且任一成员命中 → **sub_230B68(7) 立即构建 eventType 7**。
+- **`netht_pkg_cache_refresh_10min`（0x25057C，10 分钟定时器）**：`netht_selector_enabled(11)`
+  + ctx 条件 ==1 → **netht_cache_ingest_new_pkgs（增量包缓存刷新）** → sub_3ED10 处理
+  ——即 installedApk 增量通道的周期补充源（与 getToken 时的增量快照互补）。
+
+## C.5 对根因矩阵的影响
+
+- 假设 #7（电池扫描器事件）：输入源从 UNKNOWN → **E3 闭合**（命令批数据驱动；
+  本设备伪装资源不存在 → 实际输入只剩 Java ioctl 16 注入，是否存在取决于酷安业务侧，
+  仍 UNKNOWN 但边界已收窄）。
+- 假设 #1/#2（NetHT 门翻转/服务端改门）：维持排除，且证据升级（C.3）。
+- 新增精确事实：**服务端/宿主可远程调的旋钮 = 扫描节奏（1–60 分钟）、阈值、installedApk
+  模式、注册表内容注入**；不可调 = 探针门。这与"对既有信号打分/调度"的服务端策略模型
+  （假设 #2）完全相容——服务器调节奏与阈值、不改采集器开关。
+- 顺带闭合：UNKNOWN #4（定时器内容）。
+
+## C.6 IDB 元数据
+
+16 处 rename（netht_record_mgr_holder_get / netht_record_mgr_obj /
+netht_key_to_registry_offset / netht_command_batch_apply / netht_registry_payload_loader /
+netht_record_insert_wrapper / netht_record_json_insert / netht_record_cmd_verify_insert /
+netht_payload_verify_md5 / netht_registry_cross_propagate / netht_config_commands_apply /
+netht_config_normalize / netht_battery_sweep_30min / netht_pkg_cache_refresh_10min /
+netht_cmd_open_app_settings / netht_hash_to_registry）+ 5 处函数注释，已 `idb_save`。
+
+## C.7 产物
+
+- `.tmp_audit/nB_sub_9B83C.c`（键映射器）、`nB_scanner.c`（扫描器现版反编译）、
+  `nB_reg_callers.py`（访问器调用点/键值扫描）、`nB_users_survey.txt`（单例使用者普查）

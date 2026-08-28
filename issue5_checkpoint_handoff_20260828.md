@@ -11,6 +11,12 @@
 > 假设推翻；②NetHT 调用者闭合 = `com.coolapk.market.manager.NetEaseProtectSDKManager` + 并行
 > 数链魔方 SDK（cn.shuzilm.core），productId YD00000551137681 / 'PostToken.productId' 配置键
 > （附录 B.9.3）；③触发门具体键仍 UNKNOWN（B.9.4）。
+>
+> **【第六会话续 3】NetHT IDB 已切回并完成附录 C**：记录注册表写入侧闭合（命令批数据驱动：
+> ioctl selector 16 Java 注入 / 伪装资源 assets/home_button_colorful3.xml / 跨注册表传播，
+> 全部经 netht_command_batch_apply；本设备伪装文件不存在 E3 阴性）；**探针门不可翻转结论
+> 经写入白名单逐项核对后维持**（可远程调：扫描节奏/阈值/installedApk 模式；不可调：门）；
+> 两个定时器闭合（30min=16 成员电池大清扫、10min=增量包缓存刷新）。接手者先读附录 B/C。
 
 > 用途：后续模型直接接手 Issue #5 根因证据链闭合任务。本文自包含关键事实、资产、工具链与下一步，
 > 但**仓库内最新报告永远优先于本文快照**。工作区：`D:\Python Worm\coolapk-purifier`。
