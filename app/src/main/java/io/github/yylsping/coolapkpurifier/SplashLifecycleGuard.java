@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Application;
 import android.os.Bundle;
 import java.util.function.BooleanSupplier;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /** Strict post-onCreate fallback, using Android observers, never an Xposed hook. */
@@ -13,6 +14,14 @@ final class SplashLifecycleGuard implements Application.ActivityLifecycleCallbac
     private final Consumer<Activity> finish;
     private final ModuleLog log;
     private Application owner;
+    private BiConsumer<String, Activity> diagnostics;
+
+    void observeWith(BiConsumer<String, Activity> diagnostics) { this.diagnostics = diagnostics; }
+    private void observe(String event, Activity activity) {
+        try {
+            if (diagnostics != null) diagnostics.accept(event, activity);
+        } catch (Throwable ignored) { /* Never let optional observation affect existing removal. */ }
+    }
 
     SplashLifecycleGuard(SplashGate gate, BooleanSupplier enabled,
                          Consumer<Activity> finish, ModuleLog log) {
@@ -54,6 +63,7 @@ final class SplashLifecycleGuard implements Application.ActivityLifecycleCallbac
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
+        observe("activityCreated", activity);
         if (activity == null) {
             return;
         }
@@ -66,10 +76,10 @@ final class SplashLifecycleGuard implements Application.ActivityLifecycleCallbac
         }
     }
 
-    @Override public void onActivityStarted(Activity activity) { }
-    @Override public void onActivityResumed(Activity activity) { }
-    @Override public void onActivityPaused(Activity activity) { }
+    @Override public void onActivityStarted(Activity activity) { observe("activityStarted", activity); }
+    @Override public void onActivityResumed(Activity activity) { observe("activityResumed", activity); }
+    @Override public void onActivityPaused(Activity activity) { observe("activityPaused", activity); }
     @Override public void onActivityStopped(Activity activity) { }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
-    @Override public void onActivityDestroyed(Activity activity) { }
+    @Override public void onActivityDestroyed(Activity activity) { observe("activityDestroyed", activity); }
 }

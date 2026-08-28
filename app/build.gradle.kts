@@ -22,6 +22,7 @@ android {
         targetSdk = 35
         versionCode = 11
         versionName = "2.2.1"
+        buildConfigField("boolean", "SPLASH_DIAGNOSTICS", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -66,6 +67,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+        create("splashDiagnostic") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            buildConfigField("boolean", "SPLASH_DIAGNOSTICS", "true")
+            proguardFiles("splash-diagnostic.pro")
         }
     }
 
@@ -307,6 +314,28 @@ tasks.register("verifySettingsReflectionNames") {
             }
         }
         logger.lifecycle("Host settings reflection names retained in Compatible and Release")
+    }
+}
+
+tasks.register("verifySplashDiagnosticIsolation") {
+    group = "verification"
+    dependsOn("generateDebugBuildConfig", "generateCompatibleBuildConfig", "generateReleaseBuildConfig",
+        "generateSplashDiagnosticBuildConfig", "minifySplashDiagnosticWithR8")
+    doLast {
+        listOf("debug", "compatible", "release", "splashDiagnostic").forEach { variant ->
+            val config = layout.buildDirectory.file("generated/source/buildConfig/$variant/" +
+                "io/github/yylsping/coolapkpurifier/BuildConfig.java").get().asFile.readText()
+            val expected = variant == "splashDiagnostic"
+            check(config.contains("SPLASH_DIAGNOSTICS = $expected;")) {
+                "Splash observation must be enabled only in splashDiagnostic: $variant"
+            }
+        }
+        val mapping = layout.buildDirectory.file("outputs/mapping/splashDiagnostic/mapping.txt")
+            .get().asFile.readText()
+        check(mapping.lineSequence().any {
+            it == "kotlin.jvm.functions.Function0 -> kotlin.jvm.functions.Function0:"
+        }) { "Diagnostic host Function0 parameter name was rewritten" }
+        logger.lifecycle("Splash diagnostic build isolation and host parameter name verified")
     }
 }
 

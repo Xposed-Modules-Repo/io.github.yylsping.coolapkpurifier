@@ -85,6 +85,29 @@ public class SplashLifecycleGuardTest {
         assertFalse(gate.isLegacySplashName("other.FullScreenAdActivity"));
     }
 
+    @Test public void diagnosticLifecycleForwardsAllRequiredEventsWithoutFinishingMain() {
+        java.util.List<String> events = new java.util.ArrayList<>();
+        MainActivity main = new MainActivity();
+        guard.observeWith((event, activity) -> {
+            assertSame(main, activity);
+            events.add(event);
+        });
+        guard.onActivityCreated(main, null);
+        guard.onActivityStarted(main);
+        guard.onActivityResumed(main);
+        guard.onActivityPaused(main);
+        guard.onActivityDestroyed(main);
+        assertEquals(java.util.Arrays.asList("activityCreated", "activityStarted", "activityResumed",
+                "activityPaused", "activityDestroyed"), events);
+        assertEquals(0, finishes.get());
+    }
+
+    @Test public void brokenDiagnosticObserverCannotDisableExistingSplashGuard() {
+        guard.observeWith((event, activity) -> { throw new IllegalStateException("diagnostic sink"); });
+        guard.onActivityCreated(new SplashAdActivity(), null);
+        assertEquals(1, finishes.get());
+    }
+
     static class UnknownSplashActivity extends Activity { }
     static class DynamicAd extends Activity { }
     static class FakeApplication extends Application {

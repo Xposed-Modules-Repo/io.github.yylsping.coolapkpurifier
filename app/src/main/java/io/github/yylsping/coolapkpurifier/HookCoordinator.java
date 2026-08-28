@@ -60,6 +60,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final ClassLoader primaryLoader;
     private final HookLedger hookLedger = new HookLedger();
     private final SplashHooks splashHooks;
+    private final SplashDecisionHooks splashDecisionHooks;
+    private volatile boolean embeddedSplashHost;
     private final EntityListHooks entityListHooks;
     private final FeatureInstallState featureInstallState = new FeatureInstallState();
     private final SplashGate splashGate = new SplashGate();
@@ -86,6 +88,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile ReplyDiscoveryBudget replyBudget;
     private final FeatureRuntimeHealth runtimeHealth = new FeatureRuntimeHealth();
     private final SplashLifecycleGuard splashLifecycleGuard;
+    private final SplashDiagnostics splashDiagnostics;
     private volatile List<String> coreMissingRequired = java.util.Collections.emptyList();
     private final OnceFlag firstActivityPreRecorded = new OnceFlag();
     private final OnceFlag firstActivityPostRecorded = new OnceFlag();
@@ -128,6 +131,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         this.terminalTransaction = new TerminalTransaction(runtimeEpoch);
         this.configurationTransaction = new RuntimeConfigurationTransaction(runtimeEpoch);
         this.splashHooks = new SplashHooks(module, log, this, hookLedger);
+        this.splashDecisionHooks = new SplashDecisionHooks(module, log, hookLedger);
         this.entityListHooks = new EntityListHooks(module, log, hookLedger);
         this.runtimeDexObserver = new RuntimeDexObserver(module, log, this);
         this.recoveryController = new RecoveryController(log, null, null);
@@ -136,6 +140,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 () -> config == null || config.isEffectiveEnabled(
                         PurifierConfig.Feature.SPLASH, coolapkMajor),
                 activity -> splashHooks.finishSplash(activity, "lifecycle"), log);
+        this.splashDiagnostics = BuildConfig.SPLASH_DIAGNOSTICS
+                ? new SplashDiagnostics(module, log, hookLedger, new Handler(Looper.getMainLooper())) : null;
+        splashLifecycleGuard.observeWith(splashDiagnostics == null ? null : splashDiagnostics::lifecycle);
         runtimeHealth.addListener(this::logRuntimeHealth);
     }
 
@@ -188,6 +195,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
 
     private void onApplicationAttached(Application application, Context baseContext) {
         long start = SystemClock.elapsedRealtime();
+        if (splashDiagnostics != null) splashDiagnostics.event("applicationAttachAfter");
         try {
             // Application.getApplicationContext() is briefly null on some protected
             // Coolapk builds. The hooked receiver itself is already attached after
@@ -433,6 +441,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             // Build-cache descriptors can cross generations; live targets cannot.
             generationTargets.beginGeneration(nextGeneration);
             featureInstallState.beginGeneration(nextGeneration);
+            embeddedSplashHost = false;
             entityListHooks.beginGeneration(nextGeneration, loader);
             FeatureHooks hooks = featureHooks;
             if (hooks != null) {
@@ -604,6 +613,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         }
 
         requireCurrent(sessionContext, "cacheLookup");
+        boolean embeddedHost = SplashDecisionResolver.hasEmbeddedHost(sessionContext.loader);
+        requireApplied(runtimeEpoch.commit(sessionContext,
+                () -> embeddedSplashHost = embeddedHost), "splashHostCapability");
         ResolutionCache.CachedResolution cachedRes = cache.loadResolution(identity);
         trace.mark("cacheLookupStart", "attempt=" + attempt + " trigger=" + trigger
                 + " persistedSettled=" + cachedRes.coverageSettled);
@@ -612,6 +624,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (!verified.isEmpty()) {
             requireApplied(applyTargets(sessionContext, verified, "cache"),
                     "cacheApply");
+        }
+        if (splashDiagnostics != null) {
+            Map<String, ResolvedTarget> observations = splashDiagnostics.prepare(sessionContext, identity, trace);
+            requireApplied(runtimeEpoch.commit(sessionContext,
+                    () -> splashDiagnostics.install(observations, sessionContext.loader, identity)),
+                    "splashDiagnosticInstall");
         }
         // Cache-hit READY needs BOTH the persisted anchors-settled flag
         // (deadline-settled or partial saves must re-resolve) AND every
@@ -696,6 +714,18 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             log.info("resolver splash retryable state=WAIT_RUNTIME_DEX"
                     + " reason=zeroOrUnverifiableCandidates trigger=" + trigger);
             ensureLazyDiscoveryAfterSession("splashRetryable:" + trigger);
+        }
+
+        if (embeddedSplashHost && !featureInstallState.hasPrimaryHook(TargetResolver.KEY_SPLASH_DECISION)) {
+            ResolvedTarget decision = SplashDecisionResolver.resolve(bridge, loader, log);
+            requireCurrent(sessionContext, "splashDecisionResolveEnd");
+            if (decision != null) {
+                requireApplied(applyTargets(sessionContext,
+                        java.util.Collections.singletonMap(decision.key, decision), "dexkit-decision"),
+                        "splashDecisionApply");
+            } else {
+                log.info("splash decision unavailable embeddedHost=true coverage=PARTIAL");
+            }
         }
 
         Map<String, ResolvedTarget> featureTargets = new Issue2Resolver(
@@ -924,6 +954,12 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             if (currentFeatureHooks != null) {
                 currentFeatureHooks.installTargets(merged, loader, generation);
             }
+            ResolvedTarget decision = targets.get(TargetResolver.KEY_SPLASH_DECISION);
+            if (decision != null && splashDecisionHooks.install(decision, loader,
+                    () -> runtimeEpoch.loader() == loader && config != null
+                            && config.isEffectiveEnabled(PurifierConfig.Feature.SPLASH, coolapkMajor))) {
+                featureInstallState.markPrimaryHook(generation, TargetResolver.KEY_SPLASH_DECISION);
+            }
 
             for (Map.Entry<String, ResolvedTarget> entry : targets.entrySet()) {
             if (!TargetResolver.isFeedKey(entry.getKey())) {
@@ -990,7 +1026,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     }
 
     private boolean isSplashReady() {
-        return featureInstallState.hasSplashHook();
+        return SplashDecisionPolicy.ready(featureInstallState.hasSplashHook(), embeddedSplashHost,
+                featureInstallState.hasPrimaryHook(TargetResolver.KEY_SPLASH_DECISION));
     }
 
     /** Core ad-filtering capability: splash covered, live feed hooks, accessors complete. */
@@ -1009,6 +1046,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         boolean accessorsReady = entityListHooks.isAccessorsComplete();
         if (!splashReady) {
             missing.add("core:splashHook");
+            if (embeddedSplashHost
+                    && !featureInstallState.hasPrimaryHook(TargetResolver.KEY_SPLASH_DECISION)) {
+                missing.add("core:splashDecision");
+            }
         }
         if (feedHooks <= 0) {
             missing.add("core:feedHook");
@@ -1470,6 +1511,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                 + " frameworkActive=" + hookLedger.hasActiveFrameworkHooks()
                 + " frameworkActiveHooks=" + hookLedger.activeIds(HookLedger.Layer.FRAMEWORK)
                 + " splashLifecycleGuard=" + splashLifecycleGuard.isInstalled()
+                + " embeddedSplashHost=" + embeddedSplashHost
+                + " splashDecisionInstalled="
+                + featureInstallState.hasPrimaryHook(TargetResolver.KEY_SPLASH_DECISION)
                 + " " + runtimeHealth.summary();
         log.info(summary);
         traceAfterContext("runtimeHealth", summary);

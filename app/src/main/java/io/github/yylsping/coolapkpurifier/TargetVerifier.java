@@ -41,6 +41,9 @@ final class TargetVerifier {
                 return "method not loadable";
             }
             switch (keyKind(target.key)) {
+                case TargetResolver.KEY_SPLASH_DECISION:
+                    return SplashDecisionResolver.verify(target, loader)
+                            ? null : "splash decision semantic contract mismatch";
                 case TargetResolver.KEY_REPLY_SELF_DRAW:
                     return method.getDeclaringClass() == type
                             && ReplySelfDrawTarget.isBindMethod(method, loader)
