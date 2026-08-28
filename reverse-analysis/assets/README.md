@@ -10,7 +10,7 @@ assets/
   native/       目标安全组件原始 ELF（4 个 .so）
   idb/          已标注的 IDA Pro 数据库（3 个 .i64，输入路径已脱敏）
   dex/          业务 DEX 与运行时解密 DEX（4 个）
-  dex/pangle-live-lite/   Pangle live.lite 组件 8 个 dex（metasec Java 侧）
+  dex/pangle-live-lite/   Pangle live.lite 组件关键 dex（metasec Java 侧，精选 2 个）
   msdata/       metasec 本地库副本（9 个，root 拷贝）
   decompiled/   关键函数反编译证据（10 个，对应分报告章节）
 tools/          自研分析脚本（34 个，路径已改为相对路径）
@@ -33,7 +33,8 @@ tools/          自研分析脚本（34 个，路径已改为相对路径）
 | `libmetasec_ml.so.i64` | 49.32 MB | `1BC69844BD1EA935…` | IDA Pro 数据库（metasec）：模块框架/root 检测/JNI vtable 探针等 11 处重命名与注释；路径已脱敏 |
 | `libnesec.so.i64` | 5.38 MB | `833E638BED384FA7…` | IDA Pro 数据库（易盾壳解包器）：手工应用 RELA 重定位、恢复真实构造器；路径已脱敏 |
 
-> 脱敏说明：三个 i64 在入库前已对内部记录的输入文件路径做**等长字节替换**（`X:esearch\…` 占位，每库 4 处，替换后复扫无本机路径残留）。
+> 脱敏说明：三个 i64 在入库前已对内部记录的输入文件路径做**等长字节替换**（`X:
+esearch\…` 占位，每库 4 处，替换后复扫无本机路径残留）。
 > 重命名/注释等元数据未改动；如需重建原始路径关联，可直接用 `assets/native/` 中的同名 .so 新建数据库并参考 `../tools/` 脚本。
 
 ## assets/dex —— DEX（含 Pangle live.lite 组件）
@@ -43,17 +44,10 @@ tools/          自研分析脚本（34 个，路径已改为相对路径）
 | `coolapk_business_restored.dex` | 9.22 MB | `11BB1193D284455D…` | 酷安 16.6.1 业务 DEX（内存恢复 + magic 修复，Adler32/SHA-1 校验通过，11,278 类） |
 | `main_useDDI.dex` | 9.31 MB | `84E371B89F28450A…` | 运行时 DEX：网络层（X-App-Device 组装、请求头拦截器、PostToken 通道） |
 | `sdk_netht.dex` | 7.14 MB | `001CF2C5CDC9A24A…` | 运行时 DEX：NetHT Java wrapper（HTProtect / WatchMan / JNIFactory） |
-| `wrapper_ref.dex` | 9.62 MB | `75BFE95280D36F1D…` | 运行时 DEX：壳 wrapper 相关类 |
-| `pangle-live-lite/classes.dex` | 7.79 MB | `C498557CF55616F0…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes2.dex` | 1.33 MB | `B6727A4B890D4C7A…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes3.dex` | 10.66 MB | `4FB6680EA907B4FC…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes4.dex` | 10.51 MB | `4AABE7EABF3B5CAC…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes5.dex` | 11.95 MB | `4A93CCE46ECF665D…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes6.dex` | 10.63 MB | `2E370B27617424DF…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes7.dex` | 9.46 MB | `F18B5DBDA5853870…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
-| `pangle-live-lite/classes8.dex` | 8.62 MB | `C08D8D03C00367D3…` | Pangle live.lite 组件 APK（version-211448）解包 dex，metasec Java 侧分析源（SecInitTask2B / MSManager / x-bdms 上报 agent） |
+| `pangle-live-lite/classes3.dex` | 10.66 MB | `4FB6680EA907B4FC…` | live.lite 组件（version-211448）dex：metasec 初始化/触发链（SecInitTask2B、reportColdStart、SdkSecImp2B） |
+| `pangle-live-lite/classes8.dex` | 8.62 MB | `C08D8D03C00367D3…` | live.lite 组件（version-211448）dex：metasec 上报/传输链（matrix 单入口 JNI 桥、x-bdms-payload agent） |
 
-运行时 DEX 提取自酷安进程内存（易盾壳运行期解密后），盘上 APK 中不存在；`main_useDDI.dex` / `sdk_netht.dex` 仅能字符串级或手工解析，androguard 可完整解析业务 DEX。
+运行时 DEX 提取自酷安进程内存（易盾壳运行期解密后），盘上 APK 中不存在。二轮筛选已裁剪与关键结论无直接关联的条目（壳 wrapper DEX、live.lite 其余 6 个 dex，完整 8-dex 集仅保留在本地）；`main_useDDI.dex` / `sdk_netht.dex` 仅能字符串级或手工解析，androguard 可完整解析业务 DEX。
 
 ## assets/msdata —— metasec 本地库副本
 
