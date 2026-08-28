@@ -491,3 +491,187 @@ logcat 无任何 htprotect/nuid/netht/shuzilm/ddi 痕迹；而 UI 正常渲染�
   - `pC_dex_diff.py`（跨版本全集差分）
   - `pD_card_analysis*.py` / `pD_dump_classes.py` / `pD_xref_k.py` / `pD_dump_out.txt`（展示层分析）
 - 本报告：`issue5_root_cause_closure_next_report.md`。
+
+---
+
+# 附录 B：libmetasec_ml.so 专项研究（第六会话，attach point 闭合）
+
+分析时间：2026-08-28 晚（第六会话）。工具：IDA Pro MCP（`libmetasec_ml.so.i64`，用户已换库）、
+androguard 4.1.3（live.lite / Pangle 主组件 dex 调用者分析）、mt-mcp（酷安 16.6.1 主 APK 字符串核查）、
+设备 root 只读（文件名/时间戳/maps，未读受保护进程内存）。未 patch 字节、未注入、未开抓包、
+未修改模块。证据等级沿用 E3/E2/E1/UNKNOWN。
+
+## B.0 一段话结论
+
+本轮把上一轮根因排序第 1 位（metasec 独立信号）的最大缺口 **attach point 与触发时机闭合到
+E2/E3**：metasec 是 Pangle（字节系）广告/直播供应链的设备安全 SDK，结果经 **(a) live.lite 线
+`report("cold_start")`/事件 → x-bdms-payload 头 → TTNet 上行 mssdk 后端（aid 219989）**、
+**(b) Pangle 广告线 `getFeatureHash(请求体)` 签名头 + token 写入每一个广告请求**、
+(c) 本地 `.msdata/mssdk/ml` 风险库三条路输出；触发 = 组件初始化 + 每次广告请求 + 事件上报，
+"08-26 激活" = live.lite 组件当天首次下发初始化（前轮 UNKNOWN #6 就此闭合）。另发现
+metasec 的 **JNIEnv vtable inline-hook 探针**（新检测面）。NetHT 结论零改动。
+
+## B.1 native 边界（E3）
+
+- **导出面（完整 dynsym 解析，脚本 `ms_exports.py`；155 项中 defined 仅 11）**：
+  `JNI_OnLoad`（0x3F610）、`MSModuleCreator::MSModuleCreator`（0x3F560）、
+  `MSModuleCreator::register_t`（0x45554）、6 个 `MSPBDataHelper::kString*` protobuf 占位常量。
+  **无任何 `Java_*` 导出** → 全部 Java 接口经 JNI_OnLoad 内 RegisterNatives 注册（注册点位于
+  混淆控制流内，静态未直接展开；Java 侧 dex 已补齐 native 方法全清单，见 B.2）。
+- **导入面**：socket/connect/bind/sendto/recvfrom/inet_addr/epoll_wait +
+  popen/fork/dlopen/dlsym/prctl/syscall/sigaction 族——采集与反调试全套能力。
+- **模块框架闭合**：`register_t` 全部 5 处调用点还原——模块 **1**（sub_A7468，注册器
+  ms_register_module_1）、**3/5/6**（sub_C76B4 冷区，W1=3/5/6）、**2**（sub_CECE8，工厂
+  sub_CECBC，vtable `off_1E60E0`，`serialize_module2_payload` 位于 slot+0x58）；
+  **模块 4 为运行期懒注册**（ms_module4_lazy_register=0x42A04：查 map 无 ID 4 时经
+  sub_FD200(0x1000009) 构建后 sub_3F518 注册）——前轮"注册模块 1/2/3/5/6"补全为
+  "1/2/3/5/6 静态注册 + 4 运行期注册"。
+- 模块基类构造器 ms_module_base_ctor（0xC94B0，vptr=off_1E60E0）；模块分发模式
+  （0x2EE0C 区域反汇编）：`ms_module_by_id_get(N)`（0x3F450→map）→ `BLR vtable+0x28`。
+- **【新检测面】ms_jnienv_vtable_integrity_probe（0x6C3A4，E3）**：取 JNIEnv vtable 的
+  **FindClass(6)/GetMethodID(33)/GetStaticMethodID(113)/GetStringUTFChars(169)/RegisterNatives(215)**
+  五个函数指针，对每个经 `process_vm_readv(getpid(), …)` 直读目标函数序言 4 字节
+  （绕过任何 inline hook 的页内改写），与解码期望值比对；不匹配经
+  ms_finding_recorder_append（0xF4A0C，28 个调用者的通用"发现记录"汇聚点）写入模块发现
+  列表，进入序列化链。语义 = **检测 JNI vtable 的 inline hook 行为本身**（ART hook 框架常见
+  手法），而非匹配特定工具名。库内明文串仍无 Xposed/LSPosed/Zygisk 字样（前轮口径不变）。
+- **原生 socket 面 = 本地探测，非数据上行（E3）**：
+  - ms_local_bind_port_probe（0x5A954）：socket+bind 探测本地端口；EADDRINUSE 时记录事件；
+  - ms_localhost_http_probe（0x5B0C8）：向 127.0.0.1 发 `GET / HTTP/1.1`（本地 HTTP 服务探测）。
+- **设置键 kDisableIpCollection（E3）**：ms_setting_disable_ip_collection_reader（0x9A6B4）
+  从设置对象读该键（==1 关闭），在 `collect_module2_risk_fields`（0xCF04C）内门控 **IP 采集**
+  → 模块 2 采集面新增"本机 IP"一项（可被宿主配置关闭，且 Java 侧 SecConfig.getDisableIpCollection()
+  正是同一键的上游，见 B.2）。
+- mssdk_riskapp_db / mssdk_setting / last_rp_time（前轮 E3）继续有效。
+
+## B.2 Java 侧 attach point（E3；live.lite 组件 dex）
+
+组件 APK：`/data/user/0/com.coolapk.market/files/pangle_p/com.byted.live.lite/version-211448/apk/base-1.apk`
+（59,584,677 B，08-28 02:21 刷新；拉取至 `.tmp_audit/ms_java/`，8 个 dex 全量 androguard 分析）。
+
+- **唯一 JNI 桥**：`com.bytedance.mobsec.matrix.a.a(I,I,J,String,Object)→Object`（static native
+  单入口分发器；`com.bytedance.mobsec.matrix.utils.m.TN` 为其 retrofit2 上报接口：p1/p2→Call）。
+- **MSManager 公开 API**（`com.bytedance.mobsec.metasec.ml.MSManager/MSManagerUtils/MSConfig`）：
+  `getToken()`、`frameSign(String,int)`、`getFeatureHash(String,byte[])`、`getReportRaw(String,int,Map)`、
+  `report(String)`、`postEventMessage(MSBusinessHelper)`、`set{DeviceID,BDDeviceID,InstallID,
+  SessionID,MsSettingConfig,CollectMode}`；后端 `com.bytedance.mobsec.metasec.a.ax`（实现 `az$a`）
+  全部方法经 `matrix.a` 进 native。
+- **初始化与触发（E3，本轮最关键单点）**：
+  `com.bytedance.android.live.saas.middleware.sec.SecInitTask2B.realInit(Application, SecConfig)`：
+  1. `MSConfig.Builder("219989", <硬编码 license 串>, String.valueOf(IAppInfo.appId()))`
+  2. `setBDDeviceID(appLog.getDid())` / `setDeviceID` / `setInstallID(appLog.getInstallId())`
+  3. `addAdvanceInfo("kOA1"|"kDisableIpCollection"|"kS1", …)`（OAID 开关 / **IP 采集开关** /
+     传感器开关——与 B.1 native 设置键闭环）+ `setOaid(json.oaid)`
+  4. 宿主权限门：`isCanUsePhoneState/isCanUseWifiState/isCanUseWriteExternal/isCanGetAndUseAndroidID/alist()`
+     （**宿主"可读应用列表"权限包装器直接决定 metasec 应用采集面**）
+  5. `MSManagerUtils.init(ctx, config)` → `setCollectMode(I)` → **`reportColdStart` → `MSManager.report("cold_start")`**
+  事件入口：`SdkSecImp2B.report(String) → MSManagerUtils.get("219989").report(String)`；
+  CJPay 的 `CJPayMSSDKManager.report` 同样经 `get("219989")`。
+- **上行通道（E3）**：metasec Java agent（混淆包 `g/a/a/*`，113 类）：`g/a/a/ak` 用
+  `com.bytedance.retrofit2.client.Request` + `com.bytedance.ttnet.utils.RetrofitUtils`（**TTNet/cronet**，
+  组件内 libsscronet.so 佐证）构建上报，header **`x-bdms-payload` / `x-bdms-ctrl` / `x-t-zhg`**、
+  query `&cdi=0.3&sh=report_sync`、sync/async 双模式、失败重试落 `t_report_synclog` 表；
+  `g/a/a/an` 为 HttpURLConnection 降级路径。**libmetasec_ml.so 自身不做数据上行**（B.1）。
+  上报 host 由配置驱动，静态未捕获硬编码域名（UNKNOWN，见 B.6）。
+- 共存证据：组件内嵌 Turing 验证码配置（verify.snssdk.com / vcs.snssdk.com / secsdk-captcha CDN）。
+
+## B.3 Pangle 主组件第二安全面（E3，本轮新增变量细化）
+
+`pangle_p/com.byted.pangle/version-7805/`（08-27 21:30 更新）自带 **`libPglbizssdk_ml.so`**
+（1,137,040 B；拉取至 `.tmp_audit/native/`）：导出仅 `JNI_OnLoad`；Java 类
+`com.volcengine.mobsecBiz.metasec.ml.PglMS/PglMSManager/PglMSManagerUtils/PglMSConfig` +
+`com.volcengine.mobsecBiz.matrix.pgla`（与 metasec_ml 同构的单入口 native 分发器）+
+`PglITokenObserver`；agent 包 `ms.bz.bd.c.Pgl.*`（约百类，i0=getToken/report/getFeatureHash 后端）。
+酷安主 APK 静态 dex 无 mobsecBiz 字样（mt-mcp 全文核查）——该 SDK 全部位于动态下发组件。
+
+**广告请求签名链（E3，transport edge 闭合）**：
+`com.byaztp.hc.f`（Pangle 集成类）`.ys()` = `PglMSManagerUtils.init+initToken`；
+`.f(String,byte[])` = `getFeatureHash`；`.fx(String)` = `report`。
+`com.byaztp.sc.fx.f`（**广告请求构建器**）在 `doHttpReqSignReady` → `doHttpReqSign` 阶段：
+请求体 byte[]（`pvc/e.a()`）→ `hc/f.f(String, byte[]) → Map` → 签名 Map `putAll` 进请求头
+（`znj/v` builder），`hc/f.fx()`（token 串）写入请求 JSON。
+→ **每一次 Pangle 广告请求都携带 metasec 族 native 采集器产出的签名头 + token**；
+酷安 feed 广告走 Pangle 时即触发（进程内实时签名，非离线缓存）。
+
+## B.4 设备侧运行时验证（E3，root 只读）
+
+- **`.msdata` 目录语义闭合（前轮 E2 → 本轮 E3）**：`.msdata/mssdk/ml/` 路径直接含
+  `mssdk/ml`（= mssdk + metasec_ml）。文件名/时间戳可读（内容被 SELinux 拒，与 handoff §7
+  一致）：
+  | 文件 | 大小 | mtime |
+  |---|---|---|
+  | .msf3_04fa7481… / .msp_589c2233… / .mss_9b8ed995…（726B） | — | **2026-08-26 10:43–10:46**（首日） |
+  | **.mss_442656d8…** | **33,620B** | **2026-08-28 15:19** |
+  | .msf3_3afcbc4b…（124B） | — | 2026-08-28 15:19 |
+  | .mss_1f149f2d…（1B）/ .msf3_0e6a186f…（8B）/ .msp_092fde7a…（209B） | — | 2026-08-28 15:40 |
+  → **metasec 在 08-28 12:51 / 15:19 / 15:40 三个时点活跃**（白天会话），前轮"至今仅 4 会话"
+  计数继续被刷新；33KB 大文件形态与 mssdk_riskapp_db/设置库一致（内容未证实）。
+- live.lite 数据目录 08-28 15:40 活动：`socket_pipe`、`tt_net_config.config`、`IUtUidStore.xml`、
+  `annie_setting_sp.xml`、`applog_stats.xml`；`applog_stats_219989.xml` 二次确认 aid=219989。
+- **当前晚间会话（pid 8234，19:14 起）maps 中 0 个 pangle 映射**：Pangle/metasec 为
+  **懒加载**——仅当广告 SDK 初始化（首次广告请求/live 组件任务）时映射；未激活会话完全
+  不在场。与 NetHT 懒加载（附录 A.4）平行：**两大安全采集面都是"按需出现"**。
+
+## B.5 触发时机模型（规范 §4-B 对位，CONFIRMED/INFERRED/UNKNOWN）
+
+```text
+live.lite 组件下发/更新（Zeus 组件加载）
+→ SecInitTask2B.realInit
+   → MSConfig(aid=219989, license, did/installId, kDisableIpCollection/kOA1/kS1, oaid)
+   → MSManagerUtils.init → native JNI_OnLoad → RegisterNatives（混淆内）
+   → 模块 1/2/3/5/6 就绪（4 懒注册）
+   → setCollectMode → report("cold_start")
+      → native 采集（root/Magisk/自动化应用/IP/JNI vtable 完整性/本地端口…）
+      → 模块序列化（protobuf, MSPBDataHelper）→ 聚合
+      → Java agent（g/a/a.ak）→ x-bdms-payload → TTNet → mssdk 后端     [E2/E3]
+→ 此后每次 MSManager.report(event) / getToken / frameSign / getFeatureHash 均采集 [E3]
+→ Pangle 广告线：每个广告请求 doHttpReqSign（getFeatureHash+token）             [E3]
+→ 周期性上报：sync/async 双模式 + report_setting（SDKMonitor 侧 base_polling_interval
+   30s 存在同族键；metasec 自身周期值 UNKNOWN）
+```
+
+- "为何 08-26 恰好激活" → **CONFIRMED**：live.lite 组件 08-26 10:42-43 首次下发初始化
+  （前轮 §7 时间线 + 本轮 init 链），激活即采集上报；组件 08-27
+（前轮 §7 时间线 + 本轮 init 链），激活即采集上报；组件 08-27 21:30 更新至 version-211448
+  后初始化链不变。
+- 展示层（Priority D）、NetHT 结论（§1-§4、附录 A）：零改动。
+
+## B.6 What Remains UNKNOWN（增量）
+
+1. x-bdms 上报具体 host（配置驱动；无阳性自然抓包前不收敛；如抓须标
+   `CAPTURE_ENVIRONMENT=PROXIED`）。
+2. module 4 语义（懒注册，参数 0x1000009）。
+3. libmetasec_ml 内 RegisterNatives 注册表全量展开（Java 侧已闭环，边际收益低）。
+4. `.mss_442656…`（33KB）内容（SELinux 拒读；未证实是否 mssdk_riskapp_db）。
+5. libPglbizssdk_ml.so 与 libmetasec_ml.so 的采集项逐项差分（同构家族，未逐项比对）。
+6. metasec 自身周期上报间隔（"last_rp_time" 节流存在，具体值 UNKNOWN）。
+
+## B.7 Module Impact
+
+MODULE_CODE_CHANGE = NOT_PART_OF_THIS_TASK
+FOUND_DIRECT_EDGE = NO
+
+- metasec 检测的是**环境与行为基线**（root/Magisk 路径、adbd、自动化应用目录、JNI vtable
+  inline-hook、本地端口/服务、IP、（其它设备）应用列表），与模块运行时行为无独占交集：
+  模块不以 127.0.0.1 提供服务、不改 JNIEnv vtable（LSPosed 的 Java 层 hook 不 inline-patch
+  JNI vtable 函数本体）、不占用非常规端口；模块自身 APK 位于常规 /data/app/ 路径。
+- 宿主权限门 `alist()`（IHostPermissionWrapper）决定 metasec 应用采集面——本机
+  GET_INSTALLED_APPS=denied（D4）同样约束该通道（E2 推断，与 NetHT pm collector 平行）。
+- `KEEP MODE A-ZF FROZEN` 继续成立。
+
+## B.8 产物清单
+
+- IDB（`libmetasec_ml.so.i64`，已保存）：11 处 rename——ms_jnienv_vtable_integrity_probe
+  (0x6C3A4)、ms_module_base_ctor(0xC94B0)、ms_module4_lazy_register(0x42A04)、
+  ms_setting_disable_ip_collection_reader(0x9A6B4)、ms_local_bind_port_probe(0x5A954)、
+  ms_localhost_http_probe(0x5B0C8)、ms_module_by_id_get(0x3F450)、
+  ms_register_modules_3_5_6(0xC76B4)、ms_register_module_1(0xA7494)、
+  ms_register_module_2(0xCECE8)、ms_finding_recorder_append(0xF4A0C)；+5 处注释。
+- 脚本：`.tmp_audit/ms_exports.py`（通用 ELF dynsym 解析）、ms_find_regnatives.py、
+  ms_jni_sites.py、ms_vcall58.py、ms_vtable.py、ms_pb_users.py、ms_netcallers.py、
+  mt_call.py（mt-mcp 无状态调用器）。
+- 取证：`.tmp_audit/ms_java/`（live_lite_base1.apk、pangle_main_comp.apk、classes*.dex、
+  caller_result*.txt / sec_classes*.txt / pgl_analysis.txt / hc_f_callers.txt / sc_fx2.txt 等）；
+  `.tmp_audit/native/libPglbizssdk_ml.so`（1,137,040 B，自设备 version-7805 拉取）。
+- 设备（只读）：`.msdata/mssdk/ml` 文件名+时间戳表、live.lite 数据目录时间戳、pid 8234 maps
+  pangle 零映射观测。

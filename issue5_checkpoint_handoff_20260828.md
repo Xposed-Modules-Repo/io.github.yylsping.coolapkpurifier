@@ -1,5 +1,11 @@
 # Issue #5 研究Checkpoint 与 Handoff（2026-08-28 第五会话末）
 
+> **【2026-08-28 第六会话更新】§6.1 主线已完成**：metasec attach point 与触发时机闭合到 E2/E3
+> （SecInitTask2B.realInit→report("cold_start")、x-bdms-payload→TTNet 上行、getFeatureHash 进
+> 每个 Pangle 广告请求、.msdata/mssdk/ml 实证、新检测面 JNI vtable 探针），详见
+> `issue5_root_cause_closure_next_report.md` **附录 B**——接手者请先读附录 B，勿重做 metasec 线。
+> 剩余 UNKNOWN 见附录 B.6。
+
 > 用途：后续模型直接接手 Issue #5 根因证据链闭合任务。本文自包含关键事实、资产、工具链与下一步，
 > 但**仓库内最新报告永远优先于本文快照**。工作区：`D:\Python Worm\coolapk-purifier`。
 
