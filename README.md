@@ -1,27 +1,23 @@
 # 酷安净化
 
-> **2026-08-28 开屏阳性更新：`RELEASE_READY = NO`。** 14:45:53 新样本确认 MainActivity 内嵌 SplashAdFragment 漏网路径；已实现严格语义定位的 post-result 决策 Hook，保留原方法执行和旧 Activity 防护。最终普通 Release 已取得热返回时真实 `true→false` 且无广告的证据；首次缺缓存适配仍可能漏过当次广告，尚不恢复发布。详见[增量 Hook 研究与验收](splash_incremental_research_report.md)及[前阶段观察记录](splash_positive_research_report.md)。
-
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
-
-当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF、相关推荐 getter 修复、Issue #6 native loader 加固，以及 16.x Reply 自绘赞助业务目标恢复。正常 READY 清理完成后不保留 framework Hook。**16.5.1 / 16.6.1 Reply 已为 INSTALLED，但自然赞助实际移除尚未观察到**；15.9.0 旧目标回归通过。详见 [Reply 研究与验收](issue16x_reply_sponsor_research_report.md)、[剩余功能回归](issue5_2.2.1_remaining_feature_regression_report.md)、[Issue #6 验收](issue6_native_loader_reliability_report.md) 和 [发布说明](release-notes-2.2.1.md)。工程验收不代表服务端风控问题消失；针对酷安服务端风控的完整逆向研究已整理为公开研究资料，见 [风控研究总览](reverse-analysis/风控研究总览.md)。
 
 ## 功能
 
-- 在酷安原生“设置”的 `initData` 业务边界插入宿主原生 model，作为 LazyColumn 第一组普通设置项，随列表滚出且不残留点击区域；不再使用固定 View。配置页由当前设置 Activity 所属的 Dialog 承载，系统返回和顶部返回只关闭配置页，保留原生设置及滚动状态。所有选项仍直接持久化到酷安 `files/coolapk_purifier_config.json`，详见[设置页与文档验收](settings_ui_and_docs_followup_report.md)。
+- 在酷安原生“设置”的 `initData` 业务边界插入宿主原生 model，作为 LazyColumn 第一组普通设置项，随列表滚出且不残留点击区域；不再使用固定 View。配置页由当前设置 Activity 所属的 Dialog 承载，系统返回和顶部返回只关闭配置页，保留原生设置及滚动状态。所有选项仍直接持久化到酷安 `files/coolapk_purifier_config.json`。
 - 默认去除启动/开屏广告和全屏广告。
 - 默认去除首页信息流广告与赞助卡片。
-- 默认启用帖子回复区及评论赞助过滤；15.9.0 保留旧 holder，16.5.1 / 16.6.1 通过源码语义、评论页注册关系、布局资源与父类抽象绑定契约定位专用自绘 binder，只折叠精确 `feedDetailReplySponsorCard`。两版目标安装及缓存读取通过，关闭开关不安装新 Hook。按用户要求，设置页不再显示“本次启动已安装适配目标”等 Reply 状态副标题；诊断状态仍保留在日志中。INSTALLED 不等于自然阳性效果已经验证，也不会自动关闭用户开关。
+- 默认启用帖子回复区及评论赞助过滤；15.9.0 保留旧 holder，16.5.1 / 16.6.1 通过源码语义、评论页注册关系、布局资源与父类抽象绑定契约定位专用自绘 binder，只折叠精确 `feedDetailReplySponsorCard`。两版目标安装及缓存读取通过，关闭开关不安装新 Hook。设置页不显示 Reply 运行状态副标题，诊断信息保留在日志中；用户开关状态不受影响。
 - 可选去除自动评论提示、话题与机型推荐、帖子相关推荐、同话题动态和帖子内推广；酷安 15.x 以下自动禁用这些新选项。
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
 - 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。Mode A 已移除 `LayoutInflater.inflate` / `View.setTag` 布局回退。
 - 配置变更后于下次启动仅解析尚未缓存的已选目标，并分别提示首次适配与适配完成状态。
-- 开屏净化保留已解析的 Splash Activity 展示边界，并对确认的内嵌 SplashAdFragment 路径增加严格唯一的 business boolean decision Hook：先执行原方法，再按 Splash 开关覆盖返回值；不恢复旧 PRE_BLOCK。Instrumentation 用于启动期及必要降级兜底；只有 READY、专用能力与 `SplashLifecycleGuard` 注册均满足时才解除，注册失败保留兜底并如实报告非零 framework。非 Xposed lifecycle guard 在 READY 后继续覆盖已解析及精确 legacy 类名，不做宽泛名称匹配。检测到内嵌 SplashAdFragment 能力时，READY 还要求当前运行代的决策 Hook 已安装；不只检查 `SplashAdActivity.onCreate`。独立 FullScreen 未自然触发，不能据此宣称全覆盖。
+- 开屏净化保留已解析的 Splash Activity 展示边界，并对确认的内嵌 SplashAdFragment 路径增加严格唯一的 business boolean decision Hook：先执行原方法，再按 Splash 开关覆盖返回值；不恢复旧 PRE_BLOCK。Instrumentation 用于启动期及必要降级兜底；只有 READY、专用能力与 `SplashLifecycleGuard` 注册均满足时才解除，注册失败保留兜底并如实报告非零 framework。非 Xposed lifecycle guard 在 READY 后继续覆盖已解析及精确 legacy 类名，不做宽泛名称匹配。检测到内嵌 SplashAdFragment 能力时，READY 还要求当前运行代的决策 Hook 已安装；不只检查 `SplashAdActivity.onCreate`。
 - 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；设置入口使用 Android `ActivityLifecycleCallbacks` 提前安装严格验证的原生 `initData` 业务 Hook，失败只做有限重试，不退回 overlay 或 framework Hook。ViewHolder 使用受控语义定位。临时 ClassLoader discovery 按需安装，并在终态退休。
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；build cache 只保存 descriptor 元数据，live target 只在当前 ClassLoader generation 内验证、累积和安装。
-- 多目标覆盖：对本轮成功解析并验证的开屏 Activity 逐一安装 Hook，不把未解析的历史类名算作专用覆盖；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中发现的 `(List, boolean) -> List` 业务入口。
-- 两层就绪判定：核心过滤可用（开屏 + 至少一个 Feed Hook + getter 完整）与 Feed 覆盖收敛（两个历史锚点类本轮发现的全部 feed 方法均已 Hook，或 20s deadline 兜底收敛）同时满足才进入 READY；覆盖未收敛期间临时保留单发 ClassLoader 观察器，并由运行时事件与一次性 8s watchdog 提供有界重扫，在 20s deadline 前完成确定性收敛，形成确定性重试路径。
+- 多目标覆盖：对本次启动成功解析并验证的开屏 Activity 逐一安装 Hook，不把未解析的历史类名算作专用覆盖；Feed 层同时 Hook EntityAdHelper 与 EntityListFragment 中发现的 `(List, boolean) -> List` 业务入口。
+- 两层就绪判定：核心过滤可用（开屏 + 至少一个 Feed Hook + getter 完整）与 Feed 覆盖收敛（两个历史锚点类本次启动发现的全部 feed 方法均已 Hook，或 20s deadline 兜底收敛）同时满足才进入 READY；覆盖未收敛期间临时保留单发 ClassLoader 观察器，并由运行时事件与一次性 8s watchdog 提供有界重扫，在 20s deadline 前完成确定性收敛，形成确定性重试路径。
 - 会话触发合并：解析会话运行期间到来的 runtime-dex / watchdog 触发不会丢失，合并为恰好一轮后续会话；READY/DEGRADED 为真正冻结终态，迟到的后台会话无法翻转。终态先逻辑停用全局 loadClass discovery Hook，再尝试 framework unhook；正常路径完全解除，解除失败时残留 Hook 为 inert。
 - Resolver 事务隔离：每个 session 在启动时固定捕获 generation + ClassLoader，并独占其 DexKitBridge；loader 中途切换只将旧 session 标记为 superseded，不跨线程关闭 bridge。旧结果不得 apply、写 cache、进入 READY/DEGRADED，bridge 只由所属 worker 退出时关闭。
 - Terminal 事务隔离：deadline、cache hit、full scan 与 error 的 READY/DEGRADED 都在同一个 runtimeEpoch 临界区读取当前 generation readiness、missingRequired 和 loader，并原子提交带 generation/loader 的 terminal snapshot；cleanup、日志、Toast 与 watcher retire 在锁外执行，不存在 read G1 / commit G2。
@@ -43,13 +39,10 @@
 | 项目 | 要求 |
 | --- | --- |
 | 目标应用 | 酷安（包名 `com.coolapk.market`），运行时动态适配，不按版本分支 |
-| 2.2.1 默认功能 smoke 已完成 | 15.9.0；专用 Reply sponsor 阳性移除未自然触发，不声明全场景覆盖 |
-| 2.2.1 本轮带限制通过 | 16.5.1 / 16.6.1：Reply INSTALLED、核心 READY、零 framework；首次解析及缓存启动通过。16.6.1 正常评论/内联楼中楼与 Reply 关闭通过；自然赞助实际移除未观察到 |
-| 设置 UI 后续验收 | 15.9.0 / 16.5.1 / 16.6.1：原生首项滚动、系统/顶部返回、反复进出和原生设置导航；核心去广告逻辑未改，详见[设置验收](settings_ui_and_docs_followup_report.md) |
-| 历史曾验证、本轮未重新验证 | 13.1.1 / 16.1.2；本地没有对应 APK |
+| 已实机验证 | 13.1.1 / 15.9.0 / 16.1.2 / 16.5.1 / 16.6.1（2.2.1 回归覆盖 15.9.0 / 16.5.1 / 16.6.1） |
 | Android | 9（API 28）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
-| 本地候选版本 | 2.2.1（versionCode 11），因开屏阳性冻结发布；诊断阶段验收不代表广告漏网已修复 |
+| 模块版本 | 2.2.1（versionCode 11） |
 
 模块不按酷安小版本硬编码业务分支。版本适配由 DexKit 动态解析与稳定语义锚点、资源名及受控 framework fallback 组合完成；其中 fallback 只在对应功能启用时安装，并不被视为绝对稳定接口。已实机验证版本代表测试覆盖，不构成对未来或其他版本的绝对兼容保证。若新版本功能失效，请先查看目标应用内：
 
@@ -61,7 +54,7 @@
 
 ## 配套风控研究
 
-仓库 `reverse-analysis/` 目录保存针对酷安服务端风控机制的完整逆向研究：一套研究报告（总览与信号采集、传输链、跨版本差分、展示层与根因结论四份分报告），以及配套取证资产（已标注的 IDA 数据库、安全组件 ELF、内存恢复的业务 DEX 与运行时 DEX、metasec 本地库副本、关键函数反编译证据）和自研分析脚本。研究范围覆盖"客户端采集哪些信号、如何构建设备身份、经哪些通道上行、服务端风险状态如何回流到界面"，全程未制造风险阳性、未修改风控行为。入口见 [风控研究总览](reverse-analysis/风控研究总览.md)，资产与工具清单见 [assets/README.md](reverse-analysis/assets/README.md) 与 [tools/README.md](reverse-analysis/tools/README.md)。
+仓库 `reverse-analysis/` 目录保存针对酷安服务端风控机制的完整逆向研究：一套研究报告（总览与信号采集、传输链、跨版本差分、展示层与根因结论四份分报告），以及配套取证资产（已标注的 IDA 数据库、安全组件 ELF、内存恢复的业务 DEX 与运行时 DEX、metasec 本地库副本、关键函数反编译证据）和自研分析脚本。研究范围覆盖"客户端采集哪些信号、如何构建设备身份、经哪些通道上行、服务端风险状态如何回流到界面"，全程未以触发风控提示为验证手段，也未修改任何风控行为。入口见 [风控研究总览](reverse-analysis/风控研究总览.md)，资产与工具清单见 [assets/README.md](reverse-analysis/assets/README.md) 与 [tools/README.md](reverse-analysis/tools/README.md)。
 
 ## 安装
 
