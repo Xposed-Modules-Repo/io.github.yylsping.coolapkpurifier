@@ -192,8 +192,10 @@ libNetHTProtect.so 内**不存在后半段**：没有任何代码把远程/Java 
 
 ```text
 进程启动
-→ 易盾壳解密、runtime DEX 加载                                    [CONFIRMED，前轮]
+→ 易盾壳（libnesec）分级解密 + 载荷就地解密执行                    [CONFIRMED，附录 A]
+→ runtime DEX 加载                                                [CONFIRMED，前轮]
 → Java: HTProtect.init(ctx, product, callback, HTProtectConfig)   [CONFIRMED，JNI 表 E3]
+   ★ 仅当 NetHT 实际被加载时发生——普通浏览会话可整场不加载（附录 A.4，E3 实测）
     → sub_242788 读 channel/gameKey/host/getExtraData → ctx       [CONFIRMED]
     → sub_244778: 记录 "inmt"；注册探针调度器(经 qword_4C2298+496)；byte_4C26C8=1  [CONFIRMED]
 → 探针调度器 sub_2483A8 被宿主胶水回调触发（时点由 libnesec/wrapper 决定，本库不可见）[INFERRED：注册后、首次 getToken 前]
@@ -341,9 +343,9 @@ metasec 独立时间线 = CONFIRMED
 
 ## 10. What Remains UNKNOWN（诚实边界）
 
-1. **跨库写入探针门**：libnesec.so（自解壳 loader）或其它同进程 NetEase 组件是否通过
-   NetHT 导出的混淆 thunk（`oOO0…` 家族，目标 0x247B1C/0x251708/0x2455E0/0x244BFC/0x2A837C 等）
-   写配置——本轮未展开（需切 IDB，按约定需用户确认后才换文件）。
+1. **跨库写入探针门**：已在附录 A 部分收敛——静态可分析范围内零证据、两库解耦、glue 表系
+   NetHT 自建；唯一残留 = libnesec 780KB 加密载荷内部行为（需复现商业壳解密链，或运行时读
+   内存——前轮已知会触发反墓改升级）。另因 NetHT 懒加载（A.4），该问题实际影响面进一步缩小。
 2. **记录注册表（key 203695656）的写入者**：电池扫描器的输入从何而来（文件访问拦截？
    Java ioctl 事件？其它探针？）——决定 black_module/bp 等扫描器在本设备的实际产出。
 3. `qword_4C2298+600`（疑似 exit）、+496（回调注册）、+8 的确切语义（宿主胶水表，运行期构造）。
@@ -353,6 +355,9 @@ metasec 独立时间线 = CONFIRMED
 7. 风险行实际 endpoint/response（无阳性样本，结构性无法闭合）。
 8. `installedApk` 明文串在 16.6.1 壳池消失的语义（重定位 or 移除，需运行时解密区比对）。
 9. Coolapk 16.6.1 的准确升级时间（lastUpdateTime 被 08-28 重装覆盖）。
+10. **NetHT 加载/初始化的触发条件**（登录态？特定请求？特定页面？）——附录 A.4 新增；
+    待用户正常登录使用后复查 maps 即可回答（无需任何风险操作）。
+11. libnesec 加密载荷（~780KB，含真实 wrapper 逻辑）内部行为——需离线复现壳解密链或运行时取证。
 
 ---
 
@@ -384,6 +389,91 @@ FOUND_DIRECT_EDGE = NO
    且 metasec 属广告 SDK 内部协议，静态闭合成本高。
 5. **风险行 endpoint**：无阳性样本条件下结构性不可闭合；只能靠日常使用中自然出现时保存响应。
 6. **16.0–16.4 版本取样、历史 remote config 值**：无本地工件，保持区间表述。
+
+---
+
+---
+
+# 附录 A：libnesec.so 专项研究（第五会话续，用户批准换 IDB 后完成）
+
+背景：上轮 §10.1 遗留"跨库写入探针门"UNKNOWN，需要分析 libnesec.so（易盾壳 native 解包器）。
+工具：IDA Pro MCP（`libnesec.so.i64`）+ 离线 ELF 解析 + 设备 root 只读运行时观测。
+未 patch 字节、未注入、未登录、未触发风控操作。
+
+## A.1 静态结构（E3）
+
+**真实动态符号表恢复**（IDA 视图受故意污染的节表误导；改经程序头 + PT_DYNAMIC 手工解析，
+脚本 `.tmp_audit/ns_real_dynsym.py`）：
+
+- **53 个导入**（完整清单见脚本输出）：dl 族 **dlopen/dlsym/dlclose/dladdr/dl_iterate_phdr**、
+  文件 IO 族（fopen/fread/fwrite/lseek/read/write/fstat/stat）、信号族
+  **sigaction/sigprocmask/raise/abort/exit**、内存族 mmap/mprotect/munmap、
+  字符串/解析族、以及 **popen/pclose**（命令执行）与 uname/readlink/getenv/basename。
+- **唯一导出**：符号名在真实 dynstr 中同样是被污染的乱码；`st_value=0x8eff2`、size=1500，
+  指向加密载荷内部（该处盘上字节为 `00 00 b2 00` 重复密文，非代码）。
+- **NEEDED**：liblog/libz/libdl/libandroid/libc/libm/libstdc++——**不含 libNetHTProtect**。
+- **真实 INIT_ARRAY**（盘上 init_array 区为全零，经 DT_RELA 的 R_AARCH64_RELATIVE 重定位恢复）：
+  三个构造器 `0xd9464 / 0xd9508 / 0xd9bf4`（+FINI 0xd93f0 等）。上轮"三构造器"结论确认。
+- **16 个经 PLT 实际调用的导入**：sysconf/munmap/fgets/__cxa_finalize/mmap/dlclose/dlopen/
+  sscanf/sigaction/dlsym/fopen/memset/fclose/atoi/mprotect/raise——典型"分级解包 + 信号反调试"画像。
+
+**自解壳结构判定**：
+- 磁盘 0x190–0xc4000（~780KB）= 高熵加密载荷（真实 wrapper 逻辑）；静态代码仅
+  0xd8040–0xe96d8（~70KB，228 函数，大量为 4–16 字节 trampoline）。
+- ctor1（0xd9464，调 dlsym trampoline）先解密 ctor2 所需的指针表——ctor2（0xd9508）解引用
+  `off_EDE38 → 0x17590` 等盘上密文区并以 `BLR` 调用其中函数指针（分级解包，E3）。
+- 解包核心调用点 0xE1440：栈构字符串（逐字节 STRB）→ mprotect → **dlopen** → 结果检查
+  （dlopen 目标名运行期构造，静态不可读；候选：解密后载荷或 libc 反 Hook 解析）。
+- **静态可分析范围内零 NetHT 痕迹**：无 NetHT 符号名、无 NEEDED 依赖、无对 NetHT 任何静态引用。
+
+## A.2 运行时观测（E3，设备 root 只读，不注入）
+
+- 本机 APK `extractNativeLibs=false`：全部 so 以 STORED 方式从 base.apk **就地映射**
+  （安装目录 lib/arm64 为空）。已确认的就地加载 so（按 APK 偏移归属）：
+  libauth/libdu(umeng)/libhttpdns/libucrash/libumeng-spy/libxgVipSecurity/**libnesec**。
+- **libnesec 加载于 7c6e82d000+**：其 800KB 载荷段（LOAD0）运行时为 **r-x 映射**——
+  即"就地解密后作为活代码执行"，乱名导出 0x8eff2 解密后即为真实入口。
+- 壳的其它运行时工件：`.cache/.3a5505535732c68fab3089f8df24c0dc`（4KB，r--映射）紧邻
+  一个 RWX 匿名页；`files/.envelope/` 日志用后即被清空（再次观察到此前报告过的自清理现象）；
+  壳配置 pref `Y29uZmlnXzVhMzg3MjM2YTQwZmEzNzQ4ODAwMDJmNA.sp` = base64("config_<易盾appkey>")。
+
+## A.3 对上轮遗留 UNKNOWN 的回答
+
+| 遗留问题 | 本轮结论 |
+|---|---|
+| nesec 是否写 NetHT 探针门 | **静态可分析范围内零证据，且两库完全解耦**（无 NEEDED、无符号互引；见 A.4 运行时新事实）。唯一理论路径 = 780KB 加密载荷运行时经 dlsym+内存写——需复现商业壳解密链或运行时读内存（前轮已触发反墓改升级，规范禁止绕过）才能彻底排除 → 保持 UNKNOWN，但**实际重要性大幅下降**（A.4） |
+| NetHT glue 表（qword_4C2298）来源 | **闭合（E2 强）**：libNetHTProtect 自身导入 dlopen/dlsym 且含 "libc.so"/"linker" 明文串 → 反 Hook 函数表由 NetHT **自建**，与 nesec 无关 |
+| nesec 自有网络/配置通道 | 静态导入**无任何 socket/SSL**——静态解包器无网络能力；载荷内部是否有网络逻辑 UNKNOWN |
+
+## A.4 【重要新事实】libNetHTProtect 在普通浏览会话中根本不加载（E3）
+
+观测会话：冷启动（官方 am start）→ 主页面 → 唤醒 → 反复滑动 feed，持续约 10 分钟：
+**libNetHTProtect.so 从未出现在进程映射中**（对照 APK 偏移 0x64d378–0xab6330 无任何映射），
+logcat 无任何 htprotect/nuid/netht/shuzilm/ddi 痕迹；而 UI 正常渲染、壳（nesec）正常工作。
+
+推论与修正：
+1. **"每次冷启动 NetHT 初始化 + nuid 进 X-App-Device"需要修正**：NetHT 是懒加载/条件加载
+   （触发条件 UNKNOWN——本会话设备疑似未登录；按约不替用户登录验证）。仅当 NetHT 已加载的
+   进程，其请求头才可能携带 nuid/DDI 复合值；未加载会话只有基础 X-App-Device。
+2. 对根因矩阵的影响：NetHT 全部信号路径（installedApk field 12、电池扫描器、事件队列）
+   **只存在于 NetHT 已加载的会话**。若日常浏览会话普遍不加载 NetHT，则 Issue #5 观察窗口内
+   服务器可见的客户端安全信号主要来自：基础设备头 + metasec（Pangle）+ 行为序列——
+   NetHT 路径权重进一步下降，metasec/服务端策略权重进一步上升。
+3. 本设备无登录痕迹（无 user/session pref），登录态与 NetHT 加载的相关性待用户在登录状态下
+   复测（无需做任何风险操作，仅需正常使用后由我复查 maps）。
+
+## A.5 Pangle 会话计数补充（E3）
+
+- 主 Pangle SDK：`pangle_com.byted.pangle_embed_last_sp_session` session_order=**57**——长期存在。
+- live.lite（metasec 载体）：三个 session 文件，`session_order=1`（两个，mtime 08-26 10:43）
+  → `session_order=4`（今日）——**metasec 载体至今仅 4 个会话，08-26 首启结论加固**。
+
+## A.6 附录产物
+
+- 脚本：`.tmp_audit/ns_real_dynsym.py`（真实动态表恢复）、`ns_imports.py`、`ns_strxref.py`、
+  `ns_adrp_scan.py`、`ns_got_refs.py`。
+- IDB 元数据：6 处 rename（nesec_tramp_dlopen/dlclose/dlsym/mprotect/sysconf、
+  nesec_unpack_core_dlopen_site）+ 2 处注释，已保存。
 
 ---
 
