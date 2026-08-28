@@ -1,8 +1,10 @@
 # 酷安净化
 
+> **2026-08-28 开屏阳性更新：`RELEASE_READY = NO`。** 14:45:53 新样本确认 MainActivity 内嵌 SplashAdFragment 漏网路径；已实现严格语义定位的 post-result 决策 Hook，保留原方法执行和旧 Activity 防护。最终普通 Release 已取得热返回时真实 `true→false` 且无广告的证据；首次缺缓存适配仍可能漏过当次广告，尚不恢复发布。详见[增量 Hook 研究与验收](splash_incremental_research_report.md)及[前阶段观察记录](splash_positive_research_report.md)。
+
 基于 libxposed Modern API 102、面向酷安版本变化进行运行时适配的去广告模块。
 
-当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF、相关推荐 getter 修复、Issue #6 native loader 加固，以及 16.x Reply 自绘赞助业务目标恢复。正常 READY 清理完成后不保留 framework Hook。**16.5.1 / 16.6.1 Reply 已为 INSTALLED，但自然赞助实际移除尚未观察到**；15.9.0 旧目标回归通过。详见 [Reply 研究与验收](issue16x_reply_sponsor_research_report.md)、[剩余功能回归](issue5_2.2.1_remaining_feature_regression_report.md)、[Issue #6 验收](issue6_native_loader_reliability_report.md) 和 [发布说明](release-notes-2.2.1.md)。工程验收不代表服务端风控问题消失。
+当前本地候选为 **2.2.1 / versionCode 11，尚未发布，等待人工验收**：包含 Issue #5 Mode A-ZF、相关推荐 getter 修复、Issue #6 native loader 加固，以及 16.x Reply 自绘赞助业务目标恢复。正常 READY 清理完成后不保留 framework Hook。**16.5.1 / 16.6.1 Reply 已为 INSTALLED，但自然赞助实际移除尚未观察到**；15.9.0 旧目标回归通过。详见 [Reply 研究与验收](issue16x_reply_sponsor_research_report.md)、[剩余功能回归](issue5_2.2.1_remaining_feature_regression_report.md)、[Issue #6 验收](issue6_native_loader_reliability_report.md) 和 [发布说明](release-notes-2.2.1.md)。工程验收不代表服务端风控问题消失；针对酷安服务端风控的完整逆向研究已整理为公开研究资料，见 [风控研究总览](reverse-analysis/风控研究总览.md)。
 
 ## 功能
 
@@ -14,7 +16,7 @@
 - 详情页推荐采用上游数据链过滤：话题/产品/机型卡从 `Feed.getTargetRow()` 的专用组装入口截断，帖子内推广在 `Feed.getDetailSponsorCard()` 进入 header item 列表前置空；主解析不依赖广告文案或其他可见中文文本。
 - 同话题动态按服务端 `entityTemplate=feedRecommendListCard` 在 Feed 数据列表中精确过滤；宿主唯一模板判定方法是数据过滤的安全硬 gate，证据未验证时保留内容并进入安全降级，不使用标题或其他用户可控文本判定。Mode A 已移除 `LayoutInflater.inflate` / `View.setTag` 布局回退。
 - 配置变更后于下次启动仅解析尚未缓存的已选目标，并分别提示首次适配与适配完成状态。
-- 开屏净化使用已解析的 Splash Activity 展示边界，不再 Hook `FullScreenAdUtils.shouldShowAd`。Instrumentation 用于启动期及必要降级兜底；只有 READY、专用能力与 `SplashLifecycleGuard` 注册均满足时才解除，注册失败保留兜底并如实报告非零 framework。非 Xposed lifecycle guard 在 READY 后继续覆盖已解析及精确 legacy 类名，不做宽泛名称匹配。本轮专用目标为 `SplashAdActivity.onCreate`；FullScreen 未自然触发，仅完成策略/逻辑覆盖验证。
+- 开屏净化保留已解析的 Splash Activity 展示边界，并对确认的内嵌 SplashAdFragment 路径增加严格唯一的 business boolean decision Hook：先执行原方法，再按 Splash 开关覆盖返回值；不恢复旧 PRE_BLOCK。Instrumentation 用于启动期及必要降级兜底；只有 READY、专用能力与 `SplashLifecycleGuard` 注册均满足时才解除，注册失败保留兜底并如实报告非零 framework。非 Xposed lifecycle guard 在 READY 后继续覆盖已解析及精确 legacy 类名，不做宽泛名称匹配。检测到内嵌 SplashAdFragment 能力时，READY 还要求当前运行代的决策 Hook 已安装；不只检查 `SplashAdActivity.onCreate`。独立 FullScreen 未自然触发，不能据此宣称全覆盖。
 - 核心易混淆业务目标优先由 DexKit 运行时指纹跨版本解析；设置入口使用 Android `ActivityLifecycleCallbacks` 提前安装严格验证的原生 `initData` 业务 Hook，失败只做有限重试，不退回 overlay 或 framework Hook。ViewHolder 使用受控语义定位。临时 ClassLoader discovery 按需安装，并在终态退休。
 - SplashCritical 优先解析：启动时先解析并安装开屏 Hook，再后台完成 Feed/Entity getter 解析。
 - 解析顺序：有效缓存 → 强 DexKit 指纹 → 弱 DexKit 指纹 → 历史类名/反射兜底；build cache 只保存 descriptor 元数据，live target 只在当前 ClassLoader generation 内验证、累积和安装。
@@ -47,7 +49,7 @@
 | 历史曾验证、本轮未重新验证 | 13.1.1 / 16.1.2；本地没有对应 APK |
 | Android | 9（API 28）及以上 |
 | 框架 | 支持 libxposed Modern API 102 的 LSPosed |
-| 本地候选版本 | 2.2.1（versionCode 11），本地自主验收通过，等待用户人工验收，尚未发布 |
+| 本地候选版本 | 2.2.1（versionCode 11），因开屏阳性冻结发布；诊断阶段验收不代表广告漏网已修复 |
 
 模块不按酷安小版本硬编码业务分支。版本适配由 DexKit 动态解析与稳定语义锚点、资源名及受控 framework fallback 组合完成；其中 fallback 只在对应功能启用时安装，并不被视为绝对稳定接口。已实机验证版本代表测试覆盖，不构成对未来或其他版本的绝对兼容保证。若新版本功能失效，请先查看目标应用内：
 
@@ -56,6 +58,10 @@
 - LSPosed 模块日志：Resolver 候选数与 Hook 安装情况。
 
 并提交包含酷安版本号、Android 版本和相关日志的问题报告。
+
+## 配套风控研究
+
+仓库 `reverse-analysis/` 目录保存针对酷安服务端风控机制的完整逆向研究：一套研究报告（总览与信号采集、传输链、跨版本差分、展示层与根因结论四份分报告），以及配套取证资产（已标注的 IDA 数据库、安全组件 ELF、内存恢复的业务 DEX 与运行时 DEX、metasec 本地库副本、关键函数反编译证据）和自研分析脚本。研究范围覆盖"客户端采集哪些信号、如何构建设备身份、经哪些通道上行、服务端风险状态如何回流到界面"，全程未制造风险阳性、未修改风控行为。入口见 [风控研究总览](reverse-analysis/风控研究总览.md)，资产与工具清单见 [assets/README.md](reverse-analysis/assets/README.md) 与 [tools/README.md](reverse-analysis/tools/README.md)。
 
 ## 安装
 
