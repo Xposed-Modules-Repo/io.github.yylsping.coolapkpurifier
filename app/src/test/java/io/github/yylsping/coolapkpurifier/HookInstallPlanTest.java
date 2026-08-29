@@ -9,12 +9,12 @@ import java.util.EnumMap;
 
 public final class HookInstallPlanTest {
     @Test
-    public void defaultConfigurationUsesOnlyTemporaryReplyDiscovery() {
+    public void defaultConfigurationInstallsNoOptionalResolvers() {
         EnumMap<PurifierConfig.Feature, Boolean> enabled = defaults();
         HookInstallPlan plan = HookInstallPlan.from(enabled, 16);
 
-        assertTrue(plan.installClassLoader);
-        assertTrue(plan.resolveReplyHolder);
+        assertFalse(plan.installClassLoader);
+        assertFalse(plan.resolveReplyHolder);
         assertFalse(plan.resolveAutoComment);
         assertFalse(plan.resolveDetailSponsor);
     }

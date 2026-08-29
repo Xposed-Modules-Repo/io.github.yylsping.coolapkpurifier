@@ -71,3 +71,20 @@ history-apks/
 
 # Local packaging archive
 /coolapk--last.zip
+
+# Local reports, screenshots and device-debug captures
+/feed-403-root-cause-investigation-report.md
+/release-notes-*.md
+/*.png
+/*.jpg
+/*.jpeg
+/*.xml
+
+# Local prompts, rules and private working instructions
+/*prompt*.md
+/*提示词*.md
+/*规则*.md
+
+# Local reverse-engineering and experiment workspaces
+/reverse-analysis/
+/tools/

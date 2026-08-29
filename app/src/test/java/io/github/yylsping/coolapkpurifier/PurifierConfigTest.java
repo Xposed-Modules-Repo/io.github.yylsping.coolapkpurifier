@@ -27,12 +27,12 @@ public final class PurifierConfigTest {
     };
 
     @Test
-    public void firstLoadPersistsExactlyThreeLegacyDefaults() throws Exception {
+    public void firstLoadPersistsAllFeaturesDisabled() throws Exception {
         PurifierConfig config = new PurifierConfig(folder.getRoot(), REPLACE, null);
 
-        assertTrue(config.isEnabled(PurifierConfig.Feature.SPLASH));
-        assertTrue(config.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
-        assertTrue(config.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
+        assertFalse(config.isEnabled(PurifierConfig.Feature.SPLASH));
+        assertFalse(config.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
+        assertFalse(config.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
         assertFalse(config.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
         assertFalse(config.isEnabled(PurifierConfig.Feature.TOPIC_DEVICE_RECOMMEND));
         assertFalse(config.isEnabled(PurifierConfig.Feature.RELATED_DATA));
@@ -44,7 +44,7 @@ public final class PurifierConfigTest {
 
         PurifierConfig reloaded = new PurifierConfig(folder.getRoot(), REPLACE, null);
         assertEquals(PurifierConfig.PendingKind.DEFAULT, reloaded.pendingKind());
-        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
+        assertFalse(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
         assertFalse(reloaded.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
     }
 
@@ -96,6 +96,7 @@ public final class PurifierConfigTest {
     @Test
     public void disablingAnOptionAlsoMarksSelectionPending() throws Exception {
         PurifierConfig config = new PurifierConfig(folder.getRoot(), REPLACE, null);
+        assertTrue(config.setEnabled(PurifierConfig.Feature.REPLY_SPONSOR, true));
         assertTrue(config.markAdapted());
 
         assertTrue(config.setEnabled(PurifierConfig.Feature.REPLY_SPONSOR, false));
@@ -108,12 +109,12 @@ public final class PurifierConfigTest {
     @Test
     public void multipleChangesSurviveRestart() throws Exception {
         PurifierConfig config = new PurifierConfig(folder.getRoot(), REPLACE, null);
-        assertTrue(config.setEnabled(PurifierConfig.Feature.SPLASH, false));
+        assertTrue(config.setEnabled(PurifierConfig.Feature.SPLASH, true));
         assertTrue(config.setEnabled(PurifierConfig.Feature.AUTO_COMMENT, true));
         assertTrue(config.setEnabled(PurifierConfig.Feature.DETAIL_SPONSOR, true));
 
         PurifierConfig reloaded = new PurifierConfig(folder.getRoot(), REPLACE, null);
-        assertFalse(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
+        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
         assertTrue(reloaded.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
         assertTrue(reloaded.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR));
     }
@@ -124,13 +125,13 @@ public final class PurifierConfigTest {
                 .resolve(PurifierConfig.FILE_NAME).toFile();
         Files.write(file.toPath(), "{broken".getBytes(StandardCharsets.UTF_8));
         PurifierConfig malformed = new PurifierConfig(folder.getRoot(), REPLACE, null);
-        assertTrue(malformed.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
+        assertFalse(malformed.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
         assertFalse(malformed.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR));
 
         Files.write(file.toPath(), ("{\"schema\":999,\"options\":{}}")
                 .getBytes(StandardCharsets.UTF_8));
         PurifierConfig unsupported = new PurifierConfig(folder.getRoot(), REPLACE, null);
-        assertTrue(unsupported.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
+        assertFalse(unsupported.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
         assertFalse(unsupported.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
     }
 }

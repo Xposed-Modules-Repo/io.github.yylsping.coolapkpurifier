@@ -20,8 +20,8 @@ android {
         applicationId = "io.github.yylsping.coolapkpurifier"
         minSdk = 28
         targetSdk = 35
-        versionCode = 11
-        versionName = "2.2.1"
+        versionCode = 12
+        versionName = "2.2.2"
         buildConfigField("boolean", "SPLASH_DIAGNOSTICS", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -284,7 +284,7 @@ tasks.register("verifyDocumentationLinks") {
         check(stagedReleaseNotes("[report](<some report.md#result>)")
                 == "[report](<../some report.md#result>)")
         val files = rootProject.fileTree(rootProject.projectDir) {
-            include("README.md", "release-notes-2.2.1.md", "*report.md", "dist/release-notes-2.2.1.md")
+            include("README.md", "release-notes-2.2.2.md", "*report.md", "dist/release-notes-2.2.2.md")
         }.files
         var checked = 0
         files.forEach { document ->

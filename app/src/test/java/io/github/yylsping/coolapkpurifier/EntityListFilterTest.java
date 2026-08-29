@@ -64,6 +64,7 @@ public final class EntityListFilterTest {
     @Test
     public void selfDrawRequiresExactTemplateAndHonorsReplySwitch() throws Exception {
         PurifierConfig config = newConfig();
+        config.setEnabled(PurifierConfig.Feature.REPLY_SPONSOR, true);
         classifier.setConfig(config);
         Entity sponsor = new Entity("feedDetailReplySponsorCard", "", "", "entityCard");
         assertTrue(classifier.shouldRemoveReplySelfDraw(sponsor));
@@ -89,8 +90,9 @@ public final class EntityListFilterTest {
     }
 
     @Test
-    public void defaultReplySponsorDoesNotDependOnDisabledDetailSponsor() throws Exception {
+    public void enabledReplySponsorDoesNotDependOnDisabledDetailSponsor() throws Exception {
         PurifierConfig config = newConfig();
+        config.setEnabled(PurifierConfig.Feature.REPLY_SPONSOR, true);
         classifier.setConfig(config);
         Entity replyCard = new Entity("feed_detail_reply_sponsor_card", "", "", "");
 
