@@ -70,6 +70,10 @@ final class Resolve {
             case "topicDeviceRecommend":
             case "autoComment":
                 return new StaticAssemblerResolver();
+            case "searchHotCapsuleUi":
+            case "searchHotWordsUi":
+            case "searchHotRankingsUi":
+                return new SearchUiCardResolver();
             default:
                 throw new IllegalArgumentException("no resolver for " + feature);
         }
@@ -440,6 +444,183 @@ final class Resolve {
                 }
             }
             return found;
+        }
+    }
+
+    /**
+     * D7: structural contract of a search hot-word / hot-ranking card holder —
+     * mirrors the app-side SearchUiCardHooks.isExactTarget verification: final
+     * holder, public void (Object)V binder, public ctor with the pinned
+     * parameter shape, itemView declared on the RecyclerView$ViewHolder
+     * superclass, and String getters on the Card interface.
+     */
+    private static final class SearchUiCardResolver implements Resolver {
+        @Override
+        public FeatureResult resolve(Specs.FeatureSpec raw, DexIndex index) {
+            Specs.SearchUiCardSpec spec = (Specs.SearchUiCardSpec) raw;
+            FeatureResult result = new FeatureResult(spec.kind, spec.descriptor());
+            String dataDesc = Specs.classDescriptorOf(spec.dataClass);
+            String holderDesc = Specs.classDescriptorOf(spec.viewHolderClass);
+
+            for (ClassDef classDef : index.allClasses()) {
+                if (!DexIndex.isFinal(classDef)) {
+                    continue;
+                }
+                if (!index.superclassChain(classDef).contains(holderDesc)) {
+                    continue;
+                }
+                Method ctor = matchingConstructor(classDef, spec);
+                if (ctor == null || !DexIndex.isPublic(ctor)) {
+                    continue;
+                }
+                if (itemViewField(index, classDef, holderDesc) == null) {
+                    continue;
+                }
+                List<Method> binders = new ArrayList<>();
+                for (Method method : classDef.getVirtualMethods()) {
+                    if (method.getParameterTypes().size() == 1
+                            && method.getParameterTypes().get(0).toString()
+                                    .equals(dataDesc)
+                            && "V".equals(method.getReturnType())
+                            && DexIndex.isPublic(method)
+                            && !DexIndex.isStatic(method)
+                            && !DexIndex.isAbstract(method)) {
+                        binders.add(method);
+                    }
+                }
+                Method binder = null;
+                for (Method candidate : binders) {
+                    if (candidate.getName().equals(spec.methodName)) {
+                        binder = candidate;
+                        break;
+                    }
+                }
+                if (binder == null && binders.size() == 1) {
+                    binder = binders.get(0);
+                }
+                if (binder == null) {
+                    continue;
+                }
+                Candidate candidate = new Candidate(DexIndex.methodDescriptor(binder));
+                candidate.strictPass = true;
+                candidate.evidence.add("final holder extending "
+                        + spec.viewHolderClass + " with itemView:View");
+                candidate.evidence.add("public ctor shape "
+                        + DexIndex.parameterDescriptors(ctor));
+                candidate.evidence.add("public void (Object)V binder, "
+                        + binders.size() + " candidate(s)");
+                if (DexIndex.referencesString(classDef, spec.entityTemplate)) {
+                    candidate.evidence.add("references template string: "
+                            + spec.entityTemplate);
+                }
+                if (!cardContractHolds(index, spec)) {
+                    candidate.evidence.add("WARNING card contract broken on "
+                            + spec.cardClass);
+                    candidate.strictPass = false;
+                }
+                List<String> draftParams = new ArrayList<>();
+                for (String parameter : DexIndex.parameterDescriptors(ctor)) {
+                    draftParams.add(Specs.classNameOf(parameter));
+                }
+                candidate.draftSpec = spec.renamed(
+                        Specs.classNameOf(classDef.getType()),
+                        binder.getName(), draftParams);
+                boolean exactNames = classDef.getType().equals(
+                        Specs.classDescriptorOf(spec.ownerClass))
+                        && binder.getName().equals(spec.methodName)
+                        && draftParams.equals(spec.constructorParams);
+                if (exactNames && candidate.strictPass) {
+                    result.verdict = Verdict.UNCHANGED;
+                    result.verification = "pass strict=holder contract";
+                    result.candidates.clear();
+                    result.candidates.add(candidate);
+                    return result;
+                }
+                result.candidates.add(candidate);
+            }
+            finalizeVerdict(result);
+            return result;
+        }
+
+        /**
+         * Ctor whose framework parameters (androidx/android classes) match the
+         * spec exactly; app-internal obfuscated types only need the arity.
+         */
+        private static Method matchingConstructor(ClassDef classDef,
+                                                  Specs.SearchUiCardSpec spec) {
+            for (Method method : classDef.getDirectMethods()) {
+                if (!"<init>".equals(method.getName())) {
+                    continue;
+                }
+                List<String> parameters = DexIndex.parameterDescriptors(method);
+                if (parameters.size() != spec.constructorParams.size()) {
+                    continue;
+                }
+                boolean shape = true;
+                for (int i = 0; i < parameters.size(); i++) {
+                    String wanted = spec.constructorParams.get(i);
+                    if ((wanted.startsWith("android.") || wanted.startsWith("androidx."))
+                            && !parameters.get(i).equals(Specs.classDescriptorOf(wanted))) {
+                        shape = false;
+                        break;
+                    }
+                }
+                if (shape) {
+                    return method;
+                }
+            }
+            return null;
+        }
+
+        /** itemView field declared on the pinned ViewHolder superclass. */
+        private static Field itemViewField(DexIndex index, ClassDef classDef,
+                                           String holderDesc) {
+            for (String ancestor : index.superclassChain(classDef)) {
+                ClassDef parent = index.classByDescriptor(ancestor);
+                if (parent == null) {
+                    continue;
+                }
+                for (Field field : parent.getFields()) {
+                    if (field.getName().equals("itemView")
+                            && "Landroid/view/View;".equals(field.getType())) {
+                        return ancestor.equals(holderDesc) ? field : null;
+                    }
+                }
+            }
+            return null;
+        }
+
+        /** Card interface still exposes the two zero-arg String getters. */
+        private static boolean cardContractHolds(DexIndex index,
+                                                 Specs.SearchUiCardSpec spec) {
+            ClassDef card = index.classByName(spec.cardClass);
+            if (card == null) {
+                return false;
+            }
+            return hasStringGetter(index, card, spec.entityTemplateGetter)
+                    && hasStringGetter(index, card, spec.urlGetter);
+        }
+
+        private static boolean hasStringGetter(DexIndex index, ClassDef classDef,
+                                               String name) {
+            ClassDef cursor = classDef;
+            while (cursor != null) {
+                for (Method method : DexIndex.methodsNamed(cursor, name)) {
+                    if (method.getParameterTypes().size() == 0
+                            && "Ljava/lang/String;".equals(method.getReturnType())) {
+                        return true;
+                    }
+                }
+                for (String iface : cursor.getInterfaces()) {
+                    ClassDef ifaceDef = index.classByDescriptor(iface);
+                    if (ifaceDef != null && hasStringGetter(index, ifaceDef, name)) {
+                        return true;
+                    }
+                }
+                String parent = cursor.getSuperclass();
+                cursor = parent == null ? null : index.classByDescriptor(parent);
+            }
+            return false;
         }
     }
 

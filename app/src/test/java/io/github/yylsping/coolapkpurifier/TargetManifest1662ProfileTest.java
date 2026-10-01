@@ -115,6 +115,52 @@ public final class TargetManifest1662ProfileTest {
     }
 
     @Test
+    public void searchHotUiDescriptorsAreExact() {
+        TargetProfile profile = profile1662();
+        SearchUiCardTargetSpec capsule = profile.searchHotCapsuleUi;
+        assertEquals("Leu;->ވ(Ljava/lang/Object;)V", capsule.descriptor());
+        assertEquals("capsuleListCard", capsule.entityTemplate);
+        assertEquals("contentEntityType=hotSearch", capsule.urlContains);
+        assertEquals(java.util.Arrays.asList("android.view.View",
+                        "androidx.databinding.DataBindingComponent"),
+                capsule.constructorParams);
+        SearchUiCardTargetSpec words = profile.searchHotWordsUi;
+        assertEquals("Lene;->ވ(Ljava/lang/Object;)V", words.descriptor());
+        assertEquals("hotSearch", words.entityTemplate);
+        assertEquals("", words.urlContains);
+        assertEquals(java.util.Arrays.asList("android.view.View",
+                        "androidx.databinding.DataBindingComponent", "v27"),
+                words.constructorParams);
+        SearchUiCardTargetSpec rankings = profile.searchHotRankingsUi;
+        assertEquals("Ldne;->ވ(Ljava/lang/Object;)V", rankings.descriptor());
+        assertEquals("searchHotListCard", rankings.entityTemplate);
+        assertEquals(java.util.Arrays.asList("android.view.View",
+                        "androidx.databinding.DataBindingComponent", "v27", "pu3"),
+                rankings.constructorParams);
+        for (SearchUiCardTargetSpec spec : new SearchUiCardTargetSpec[]{
+                capsule, words, rankings}) {
+            assertEquals("java.lang.Object", spec.dataClass);
+            assertEquals("com.coolapk.market.model.Card", spec.cardClass);
+            assertEquals("getEntityTemplate", spec.entityTemplateGetter);
+            assertEquals("getUrl", spec.urlGetter);
+            assertEquals("androidx.recyclerview.widget.RecyclerView$ViewHolder",
+                    spec.viewHolderClass);
+        }
+    }
+
+    @Test
+    public void searchHotUiAbsentFrom1661Profile() {
+        TargetProfile profile1661 =
+                TestManifests.manifest().validatedProfileFor(TestManifests.COOLAPK_16_6_1);
+        if (profile1661 == null) {
+            throw new AssertionError("bundled manifest must validate 16.6.1");
+        }
+        org.junit.Assert.assertNull(profile1661.searchHotCapsuleUi);
+        org.junit.Assert.assertNull(profile1661.searchHotWordsUi);
+        org.junit.Assert.assertNull(profile1661.searchHotRankingsUi);
+    }
+
+    @Test
     public void profileIdentity() {
         TargetProfile profile = profile1662();
         assertEquals(2_609_151L, profile.versionCode);

@@ -84,8 +84,7 @@ public final class Main {
         DexIndex index = DexIndex.load(new File(apkPath));
         System.out.println("indexed " + index.classCount() + " classes");
 
-        JSONObject targets = Specs.baselineTargets(manifest,
-                baselineProfile.getLong("versionCode"));
+        JSONObject targets = Specs.baselineTargets(manifest, versionCode);
 
         StringBuilder report = new StringBuilder();
         report.append("# adapter report\n");

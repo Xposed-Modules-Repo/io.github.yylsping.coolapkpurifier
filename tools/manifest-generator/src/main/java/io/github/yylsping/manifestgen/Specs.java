@@ -17,7 +17,8 @@ final class Specs {
 
     static final String[] FEATURE_ORDER = {
             "detailSponsor", "replySponsor", "sameTopic",
-            "topicDeviceRecommend", "autoComment"
+            "topicDeviceRecommend", "autoComment",
+            "searchHotCapsuleUi", "searchHotWordsUi", "searchHotRankingsUi"
     };
 
     static String typeDescriptorOf(String type) {
@@ -291,6 +292,78 @@ final class Specs {
         }
     }
 
+    /** kind=searchHot*Ui (D7 search hot-word / hot-ranking UI terminals). */
+    static final class SearchUiCardSpec extends FeatureSpec {
+        final String ownerClass;
+        final String methodName;
+        final String dataClass;
+        final String cardClass;
+        final String entityTemplateGetter;
+        final String entityTemplate;
+        final String urlGetter;
+        final String urlContains;
+        final List<String> constructorParams;
+        final String viewHolderClass;
+
+        SearchUiCardSpec(String kind, JSONObject json) {
+            super(kind);
+            this.ownerClass = json.getString("ownerClass");
+            this.methodName = json.getString("methodName");
+            this.dataClass = json.getString("dataClass");
+            this.cardClass = json.getString("cardClass");
+            this.entityTemplateGetter = json.getString("entityTemplateGetter");
+            this.entityTemplate = json.getString("entityTemplate");
+            this.urlGetter = json.getString("urlGetter");
+            this.urlContains = json.optString("urlContains", "");
+            this.constructorParams = toList(json.getJSONArray("constructorParams"));
+            this.viewHolderClass = json.getString("viewHolderClass");
+        }
+
+        private SearchUiCardSpec(SearchUiCardSpec base, String ownerClass,
+                                 String methodName, List<String> constructorParams) {
+            super(base.kind);
+            this.ownerClass = ownerClass;
+            this.methodName = methodName;
+            this.dataClass = base.dataClass;
+            this.cardClass = base.cardClass;
+            this.entityTemplateGetter = base.entityTemplateGetter;
+            this.entityTemplate = base.entityTemplate;
+            this.urlGetter = base.urlGetter;
+            this.urlContains = base.urlContains;
+            this.constructorParams = constructorParams;
+            this.viewHolderClass = base.viewHolderClass;
+        }
+
+        SearchUiCardSpec renamed(String ownerClass, String methodName,
+                                 List<String> constructorParams) {
+            return new SearchUiCardSpec(this, ownerClass, methodName,
+                    constructorParams);
+        }
+
+        @Override
+        String descriptor() {
+            String suffix = urlContains.isEmpty() ? "" : " urlContains=" + urlContains;
+            return classDescriptorOf(ownerClass) + "->" + methodName
+                    + "(Ljava/lang/Object;)V template=" + entityTemplate + suffix;
+        }
+
+        @Override
+        JSONObject toJson() {
+            return new JSONObject()
+                    .put("kind", kind)
+                    .put("ownerClass", ownerClass)
+                    .put("methodName", methodName)
+                    .put("dataClass", dataClass)
+                    .put("cardClass", cardClass)
+                    .put("entityTemplateGetter", entityTemplateGetter)
+                    .put("entityTemplate", entityTemplate)
+                    .put("urlGetter", urlGetter)
+                    .put("urlContains", urlContains)
+                    .put("constructorParams", new JSONArray(constructorParams))
+                    .put("viewHolderClass", viewHolderClass);
+        }
+    }
+
     static FeatureSpec parse(String feature, JSONObject json) {
         switch (feature) {
             case "detailSponsor":
@@ -302,6 +375,10 @@ final class Specs {
             case "topicDeviceRecommend":
             case "autoComment":
                 return new StaticSpec(json);
+            case "searchHotCapsuleUi":
+            case "searchHotWordsUi":
+            case "searchHotRankingsUi":
+                return new SearchUiCardSpec(feature, json);
             default:
                 throw new IllegalArgumentException("unknown feature " + feature);
         }
