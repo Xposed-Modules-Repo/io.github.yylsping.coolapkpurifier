@@ -32,6 +32,10 @@ final class HookTopology {
                 return "coolapk-d6-auto-comment";
             case RELATED_DATA:
                 return RelatedDataDelta.GETTER_HOOK_ID;
+            case SEARCH_HOT_WORDS:
+                return SearchHotWordsDelta.HOT_WORDS_UI_HOOK_ID;
+            case SEARCH_HOT_RANKINGS:
+                return SearchHotRankingsDelta.UI_HOOK_ID;
             default:
                 return "";
         }

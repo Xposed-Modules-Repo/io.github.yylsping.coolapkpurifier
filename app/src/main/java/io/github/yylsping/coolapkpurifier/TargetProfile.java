@@ -42,6 +42,9 @@ final class TargetProfile {
     final RelatedDataTargetSpec relatedData;
     final RelatedIconListUiTargetSpec relatedIconListUi;
     final RelatedContentUiTargetSpec relatedContentUi;
+    final SearchUiCardTargetSpec searchHotCapsuleUi;
+    final SearchUiCardTargetSpec searchHotWordsUi;
+    final SearchUiCardTargetSpec searchHotRankingsUi;
 
     private TargetProfile(long versionCode, String versionName, Status status,
                           DetailSponsorTargetSpec detailSponsor,
@@ -54,7 +57,10 @@ final class TargetProfile {
                           AutoCommentPromptTargetSpec autoCommentPrompt,
                           RelatedDataTargetSpec relatedData,
                           RelatedIconListUiTargetSpec relatedIconListUi,
-                          RelatedContentUiTargetSpec relatedContentUi) {
+                          RelatedContentUiTargetSpec relatedContentUi,
+                          SearchUiCardTargetSpec searchHotCapsuleUi,
+                          SearchUiCardTargetSpec searchHotWordsUi,
+                          SearchUiCardTargetSpec searchHotRankingsUi) {
         this.versionCode = versionCode;
         this.versionName = versionName;
         this.status = status;
@@ -69,6 +75,9 @@ final class TargetProfile {
         this.relatedData = relatedData;
         this.relatedIconListUi = relatedIconListUi;
         this.relatedContentUi = relatedContentUi;
+        this.searchHotCapsuleUi = searchHotCapsuleUi;
+        this.searchHotWordsUi = searchHotWordsUi;
+        this.searchHotRankingsUi = searchHotRankingsUi;
     }
 
     static TargetProfile parse(JSONObject json) throws TargetManifest.ManifestException {
@@ -92,7 +101,8 @@ final class TargetProfile {
                 "detailSponsor", "detailSponsorUi", "replySponsor", "sameTopic",
                 "topicDeviceRecommend", "topicDeviceRecommendUi",
                 "autoComment", "autoCommentPrompt", "relatedData",
-                "relatedIconListUi", "relatedContentUi"));
+                "relatedIconListUi", "relatedContentUi",
+                "searchHotCapsuleUi", "searchHotWordsUi", "searchHotRankingsUi"));
         for (java.util.Iterator<String> keys = targets.keys(); keys.hasNext(); ) {
             String key = keys.next();
             if (!known.contains(key)) {
@@ -111,7 +121,13 @@ final class TargetProfile {
                 AutoCommentPromptTargetSpec.parse(targets.optJSONObject("autoCommentPrompt")),
                 RelatedDataTargetSpec.parse(targets.optJSONObject("relatedData")),
                 RelatedIconListUiTargetSpec.parse(targets.optJSONObject("relatedIconListUi")),
-                RelatedContentUiTargetSpec.parse(targets.optJSONObject("relatedContentUi")));
+                RelatedContentUiTargetSpec.parse(targets.optJSONObject("relatedContentUi")),
+                SearchUiCardTargetSpec.parse(
+                        targets.optJSONObject("searchHotCapsuleUi"), "searchHotCapsuleUi"),
+                SearchUiCardTargetSpec.parse(
+                        targets.optJSONObject("searchHotWordsUi"), "searchHotWordsUi"),
+                SearchUiCardTargetSpec.parse(
+                        targets.optJSONObject("searchHotRankingsUi"), "searchHotRankingsUi"));
         if (status == Status.VALIDATED) {
             // A validated profile is a production contract: every
             // manifest-managed target must exist and be fully typed. Missing

@@ -88,6 +88,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private final D5TopicDeviceRecommendDelta d5TopicDeviceRecommendDelta;
     private final D6AutoCommentDelta d6AutoCommentDelta;
     private final RelatedDataDelta relatedDataDelta;
+    private final SearchHotWordsDelta searchHotWordsDelta;
+    private final SearchHotRankingsDelta searchHotRankingsDelta;
     private final RecoveryController recoveryController;
     private final FirstAdaptationToast firstAdaptationToast;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -166,6 +168,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         this.d6AutoCommentDelta = new D6AutoCommentDelta(
                 module, log, featureGate, exposureLedger);
         this.relatedDataDelta = new RelatedDataDelta(
+                module, log, featureGate, exposureLedger);
+        this.searchHotWordsDelta = new SearchHotWordsDelta(
+                module, log, featureGate, exposureLedger);
+        this.searchHotRankingsDelta = new SearchHotRankingsDelta(
                 module, log, featureGate, exposureLedger);
         this.recoveryController = new RecoveryController(log, null, null);
         this.firstAdaptationToast = new FirstAdaptationToast(log);
@@ -349,6 +355,8 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         topology = new HookTopology(effectiveSnapshot(), profile != null);
 
         installManifestFeatures(profile, context.getClassLoader());
+        // TEMPORARY diagnostic for the staged search-UI goal; remove before acceptance.
+        SearchUiDiagnostic.install(module, log, context.getClassLoader());
 
         // The embedded UI cleaner depends only on the exact fragment class,
         // never on the resolver pipeline or the decision observer.
@@ -430,6 +438,64 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         installTopicDeviceFeature(profile, loader);
         installAutoCommentFeature(profile, loader);
         installRelatedDataFeature(profile, loader);
+        installSearchHotWordsFeature(profile, loader);
+        installSearchHotRankingsFeature(profile, loader);
+    }
+
+    /**
+     * SEARCH_HOT_WORDS: two independent UI layers (home-ranking hot-word
+     * capsule + search-page hot-search card). Each resolves on its own from
+     * the same validated profile; one missing layer reports honest PARTIAL.
+     */
+    private void installSearchHotWordsFeature(TargetProfile profile, ClassLoader loader) {
+        PurifierConfig.Feature feature = PurifierConfig.Feature.SEARCH_HOT_WORDS;
+        if (!topology.isEnabledAtStart(feature)) {
+            log.info("feature=" + feature.key + " source=manifest_exact"
+                    + " install=DISABLED hookInstalled=false");
+            return;
+        }
+        InstallResult result = searchHotWordsDelta.install(
+                profile == null ? null : profile.searchHotCapsuleUi,
+                profile == null ? null : profile.searchHotWordsUi,
+                loader);
+        topology.recordInstallResult(feature, result);
+        if (result == InstallResult.INSTALLED || result == InstallResult.PARTIAL) {
+            if (searchHotWordsDelta.capsuleUiInstalled()) {
+                hookLedger.record(HookLedger.Layer.BUSINESS, feature.key,
+                        SearchHotWordsDelta.CAPSULE_UI_HOOK_ID, "manifest_exact");
+            }
+            if (searchHotWordsDelta.hotWordsUiInstalled()) {
+                hookLedger.record(HookLedger.Layer.BUSINESS, feature.key,
+                        SearchHotWordsDelta.HOT_WORDS_UI_HOOK_ID, "manifest_exact");
+            }
+        }
+        log.info("feature=" + feature.key + " source=manifest_exact"
+                + " install=" + result
+                + " hookInstalled=" + (result == InstallResult.INSTALLED
+                || result == InstallResult.PARTIAL
+                || result == InstallResult.ALREADY_INSTALLED));
+    }
+
+    /** SEARCH_HOT_RANKINGS: single exact search-page hot-list UI collapse. */
+    private void installSearchHotRankingsFeature(TargetProfile profile, ClassLoader loader) {
+        PurifierConfig.Feature feature = PurifierConfig.Feature.SEARCH_HOT_RANKINGS;
+        if (!topology.isEnabledAtStart(feature)) {
+            log.info("feature=" + feature.key + " source=manifest_exact"
+                    + " install=DISABLED hookInstalled=false");
+            return;
+        }
+        InstallResult result = searchHotRankingsDelta.install(
+                profile == null ? null : profile.searchHotRankingsUi,
+                loader);
+        topology.recordInstallResult(feature, result);
+        if (result == InstallResult.INSTALLED) {
+            hookLedger.record(HookLedger.Layer.BUSINESS, feature.key,
+                    SearchHotRankingsDelta.UI_HOOK_ID, "manifest_exact");
+        }
+        log.info("feature=" + feature.key + " source=manifest_exact"
+                + " install=" + result
+                + " hookInstalled=" + (result == InstallResult.INSTALLED
+                || result == InstallResult.ALREADY_INSTALLED));
     }
 
     /**

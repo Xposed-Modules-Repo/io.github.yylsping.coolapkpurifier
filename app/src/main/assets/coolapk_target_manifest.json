@@ -260,7 +260,59 @@
             "int"
           ],
           "returnType": "void"
+        },
+        "searchHotCapsuleUi": {
+          "kind": "searchHotCapsuleUi",
+          "ownerClass": "eu",
+          "methodName": "ވ",
+          "dataClass": "java.lang.Object",
+          "cardClass": "com.coolapk.market.model.Card",
+          "entityTemplateGetter": "getEntityTemplate",
+          "entityTemplate": "capsuleListCard",
+          "urlGetter": "getUrl",
+          "urlContains": "contentEntityType=hotSearch",
+          "constructorParams": [
+            "android.view.View",
+            "androidx.databinding.DataBindingComponent"
+          ],
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder"
+        },
+        "searchHotWordsUi": {
+          "kind": "searchHotWordsUi",
+          "ownerClass": "ene",
+          "methodName": "ވ",
+          "dataClass": "java.lang.Object",
+          "cardClass": "com.coolapk.market.model.Card",
+          "entityTemplateGetter": "getEntityTemplate",
+          "entityTemplate": "hotSearch",
+          "urlGetter": "getUrl",
+          "urlContains": "",
+          "constructorParams": [
+            "android.view.View",
+            "androidx.databinding.DataBindingComponent",
+            "v27"
+          ],
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder"
+        },
+        "searchHotRankingsUi": {
+          "kind": "searchHotRankingsUi",
+          "ownerClass": "dne",
+          "methodName": "ވ",
+          "dataClass": "java.lang.Object",
+          "cardClass": "com.coolapk.market.model.Card",
+          "entityTemplateGetter": "getEntityTemplate",
+          "entityTemplate": "searchHotListCard",
+          "urlGetter": "getUrl",
+          "urlContains": "",
+          "constructorParams": [
+            "android.view.View",
+            "androidx.databinding.DataBindingComponent",
+            "v27",
+            "pu3"
+          ],
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder"
         }
+
       }
     }
   ]

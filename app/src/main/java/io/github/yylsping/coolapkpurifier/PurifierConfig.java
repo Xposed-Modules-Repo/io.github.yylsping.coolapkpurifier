@@ -25,7 +25,9 @@ final class PurifierConfig {
         TOPIC_DEVICE_RECOMMEND("remove_topic_device_recommend", "去除话题与机型推荐", false, true),
         RELATED_DATA("remove_related_data", "去除帖子相关推荐", false, true),
         SAME_TOPIC_FEED("remove_same_topic_feed", "去除同话题动态", false, true),
-        DETAIL_SPONSOR("remove_detail_sponsor", "去除帖子内推广", false, true);
+        DETAIL_SPONSOR("remove_detail_sponsor", "去除帖子内推广", false, true),
+        SEARCH_HOT_WORDS("remove_search_hot_words", "去除热门搜索与热榜热词", false, true),
+        SEARCH_HOT_RANKINGS("remove_search_hot_rankings", "去除搜索页热榜", false, true);
 
         final String key;
         final String title;
