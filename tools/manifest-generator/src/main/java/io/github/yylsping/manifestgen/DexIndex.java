@@ -39,6 +39,10 @@ final class DexIndex {
             if (dumps == null || dumps.length == 0) {
                 throw new IOException("no .dex files in " + input);
             }
+            // Deterministic merge order: name-sorted, first definition wins.
+            // Callers can prefix file names to control precedence when
+            // combining a primary dump with reference-only chunks.
+            java.util.Arrays.sort(dumps, java.util.Comparator.comparing(File::getName));
             for (File dump : dumps) {
                 index.add(DexFileFactory.loadDexContainer(dump, null));
             }

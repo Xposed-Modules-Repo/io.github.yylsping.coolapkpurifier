@@ -149,15 +149,31 @@ public final class TargetManifest1662ProfileTest {
     }
 
     @Test
-    public void searchHotUiAbsentFrom1661Profile() {
+    public void searchHotUi1661ProfileUsesAdjudicatedHolders() {
         TargetProfile profile1661 =
                 TestManifests.manifest().validatedProfileFor(TestManifests.COOLAPK_16_6_1);
         if (profile1661 == null) {
             throw new AssertionError("bundled manifest must validate 16.6.1");
         }
-        org.junit.Assert.assertNull(profile1661.searchHotCapsuleUi);
-        org.junit.Assert.assertNull(profile1661.searchHotWordsUi);
-        org.junit.Assert.assertNull(profile1661.searchHotRankingsUi);
+        SearchUiCardTargetSpec capsule = profile1661.searchHotCapsuleUi;
+        assertEquals("Lnn;->ވ(Ljava/lang/Object;)V", capsule.descriptor());
+        assertEquals("capsuleListCard", capsule.entityTemplate);
+        assertEquals("contentEntityType=hotSearch", capsule.urlContains);
+        assertEquals(java.util.Arrays.asList("android.view.View",
+                        "androidx.databinding.DataBindingComponent"),
+                capsule.constructorParams);
+        SearchUiCardTargetSpec words = profile1661.searchHotWordsUi;
+        assertEquals("Lb3e;->ވ(Ljava/lang/Object;)V", words.descriptor());
+        assertEquals("hotSearch", words.entityTemplate);
+        assertEquals(java.util.Arrays.asList("android.view.View",
+                        "androidx.databinding.DataBindingComponent", "bq6"),
+                words.constructorParams);
+        SearchUiCardTargetSpec rankings = profile1661.searchHotRankingsUi;
+        assertEquals("La3e;->ވ(Ljava/lang/Object;)V", rankings.descriptor());
+        assertEquals("searchHotListCard", rankings.entityTemplate);
+        assertEquals(java.util.Arrays.asList("android.view.View",
+                        "androidx.databinding.DataBindingComponent", "bq6", "pj3"),
+                rankings.constructorParams);
     }
 
     @Test

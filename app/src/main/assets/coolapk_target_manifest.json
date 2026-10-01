@@ -129,6 +129,60 @@
             "int"
           ],
           "returnType": "void"
+        },
+        "searchHotCapsuleUi": {
+          "kind": "searchHotCapsuleUi",
+          "ownerClass": "nn",
+          "methodName": "ވ",
+          "dataClass": "java.lang.Object",
+          "cardClass": "com.coolapk.market.model.Card",
+          "entityTemplateGetter": "getEntityTemplate",
+          "entityTemplate": "capsuleListCard",
+          "urlGetter": "getUrl",
+          "urlContains": "contentEntityType=hotSearch",
+          "constructorParams": [
+            "android.view.View",
+            "androidx.databinding.DataBindingComponent"
+          ],
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+          "layoutName": "item_capsule_list"
+        },
+        "searchHotWordsUi": {
+          "kind": "searchHotWordsUi",
+          "ownerClass": "b3e",
+          "methodName": "ވ",
+          "dataClass": "java.lang.Object",
+          "cardClass": "com.coolapk.market.model.Card",
+          "entityTemplateGetter": "getEntityTemplate",
+          "entityTemplate": "hotSearch",
+          "urlGetter": "getUrl",
+          "urlContains": "",
+          "constructorParams": [
+            "android.view.View",
+            "androidx.databinding.DataBindingComponent",
+            "bq6"
+          ],
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+          "layoutName": "search_hot"
+        },
+        "searchHotRankingsUi": {
+          "kind": "searchHotRankingsUi",
+          "ownerClass": "a3e",
+          "methodName": "ވ",
+          "dataClass": "java.lang.Object",
+          "cardClass": "com.coolapk.market.model.Card",
+          "entityTemplateGetter": "getEntityTemplate",
+          "entityTemplate": "searchHotListCard",
+          "urlGetter": "getUrl",
+          "urlContains": "",
+          "constructorParams": [
+            "android.view.View",
+            "androidx.databinding.DataBindingComponent",
+            "bq6",
+            "pj3"
+          ],
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+          "layoutName": "search_hot_list_card"
         }
       }
     },
@@ -275,7 +329,8 @@
             "android.view.View",
             "androidx.databinding.DataBindingComponent"
           ],
-          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder"
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+          "layoutName": "item_capsule_list"
         },
         "searchHotWordsUi": {
           "kind": "searchHotWordsUi",
@@ -292,7 +347,8 @@
             "androidx.databinding.DataBindingComponent",
             "v27"
           ],
-          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder"
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+          "layoutName": "search_hot"
         },
         "searchHotRankingsUi": {
           "kind": "searchHotRankingsUi",
@@ -310,7 +366,8 @@
             "v27",
             "pu3"
           ],
-          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder"
+          "viewHolderClass": "androidx.recyclerview.widget.RecyclerView$ViewHolder",
+          "layoutName": "search_hot_list_card"
         }
 
       }

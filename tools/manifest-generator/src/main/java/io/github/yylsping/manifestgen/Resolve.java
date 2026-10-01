@@ -476,6 +476,10 @@ final class Resolve {
                 if (itemViewField(index, classDef, holderDesc) == null) {
                     continue;
                 }
+                String layoutMatch = layoutDisambiguation(classDef, spec);
+                if (layoutMatch == null) {
+                    continue;
+                }
                 List<Method> binders = new ArrayList<>();
                 for (Method method : classDef.getVirtualMethods()) {
                     if (method.getParameterTypes().size() == 1
@@ -513,6 +517,10 @@ final class Resolve {
                     candidate.evidence.add("references template string: "
                             + spec.entityTemplate);
                 }
+                if (!layoutMatch.isEmpty()) {
+                    candidate.evidence.add("layout field maps to R.layout."
+                            + layoutMatch);
+                }
                 if (!cardContractHolds(index, spec)) {
                     candidate.evidence.add("WARNING card contract broken on "
                             + spec.cardClass);
@@ -538,6 +546,12 @@ final class Resolve {
                 }
                 result.candidates.add(candidate);
             }
+            // Layout-adjudicated candidates first: among structurally
+            // identical siblings the pinned R.layout reference is the
+            // strongest discriminator a dump can offer.
+            result.candidates.sort((a, b) -> Boolean.compare(
+                    b.evidence.stream().anyMatch(e -> e.startsWith("layout field")),
+                    a.evidence.stream().anyMatch(e -> e.startsWith("layout field"))));
             finalizeVerdict(result);
             return result;
         }
@@ -570,6 +584,54 @@ final class Resolve {
                 }
             }
             return null;
+        }
+
+        /**
+         * Layout-based disambiguation among structurally identical sibling
+         * holders: the holder's static layout constant is assigned in clinit
+         * from an R$layout field (sget reference), so clinit field references
+         * are compared with the spec's layoutName directly. Returns the
+         * matched layout name, "" when undecidable (no layoutName pinned or
+         * no R$layout reference), and null on a proven mismatch.
+         */
+        private static String layoutDisambiguation(ClassDef classDef,
+                                                   Specs.SearchUiCardSpec spec) {
+            if (spec.layoutName.isEmpty()) {
+                return "";
+            }
+            for (Method method : classDef.getDirectMethods()) {
+                if (!"<clinit>".equals(method.getName())) {
+                    continue;
+                }
+                org.jf.dexlib2.iface.MethodImplementation implementation =
+                        method.getImplementation();
+                if (implementation == null) {
+                    continue;
+                }
+                for (org.jf.dexlib2.iface.instruction.Instruction instruction
+                        : implementation.getInstructions()) {
+                    if (!(instruction instanceof org.jf.dexlib2.iface.instruction
+                            .ReferenceInstruction)) {
+                        continue;
+                    }
+                    org.jf.dexlib2.iface.reference.Reference reference =
+                            ((org.jf.dexlib2.iface.instruction.ReferenceInstruction)
+                                    instruction).getReference();
+                    if (!(reference instanceof org.jf.dexlib2.iface.reference
+                            .FieldReference)) {
+                        continue;
+                    }
+                    org.jf.dexlib2.iface.reference.FieldReference field =
+                            (org.jf.dexlib2.iface.reference.FieldReference) reference;
+                    if (!field.getDefiningClass().endsWith("/R$layout;")
+                            || !"I".equals(field.getType())) {
+                        continue;
+                    }
+                    return field.getName().equals(spec.layoutName)
+                            ? field.getName() : null;
+                }
+            }
+            return "";
         }
 
         /** itemView field declared on the pinned ViewHolder superclass. */

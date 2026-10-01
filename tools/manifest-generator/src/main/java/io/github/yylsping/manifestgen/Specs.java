@@ -304,6 +304,7 @@ final class Specs {
         final String urlContains;
         final List<String> constructorParams;
         final String viewHolderClass;
+        final String layoutName;
 
         SearchUiCardSpec(String kind, JSONObject json) {
             super(kind);
@@ -317,6 +318,7 @@ final class Specs {
             this.urlContains = json.optString("urlContains", "");
             this.constructorParams = toList(json.getJSONArray("constructorParams"));
             this.viewHolderClass = json.getString("viewHolderClass");
+            this.layoutName = json.optString("layoutName", "");
         }
 
         private SearchUiCardSpec(SearchUiCardSpec base, String ownerClass,
@@ -332,6 +334,7 @@ final class Specs {
             this.urlContains = base.urlContains;
             this.constructorParams = constructorParams;
             this.viewHolderClass = base.viewHolderClass;
+            this.layoutName = base.layoutName;
         }
 
         SearchUiCardSpec renamed(String ownerClass, String methodName,
@@ -349,7 +352,7 @@ final class Specs {
 
         @Override
         JSONObject toJson() {
-            return new JSONObject()
+            JSONObject json = new JSONObject()
                     .put("kind", kind)
                     .put("ownerClass", ownerClass)
                     .put("methodName", methodName)
@@ -361,6 +364,10 @@ final class Specs {
                     .put("urlContains", urlContains)
                     .put("constructorParams", new JSONArray(constructorParams))
                     .put("viewHolderClass", viewHolderClass);
+            if (!layoutName.isEmpty()) {
+                json.put("layoutName", layoutName);
+            }
+            return json;
         }
     }
 
