@@ -41,6 +41,22 @@ final class HookTopology {
         }
     }
 
+    /**
+     * Every business hook id a feature can install. Features with layered
+     * terminals (SEARCH_HOT_WORDS: home capsule + search page) have more
+     * than one; the topology summary must count them all so a PARTIAL
+     * install never reports hookInstalled=true with activeHookCount=0.
+     */
+    static String[] businessHookIds(PurifierConfig.Feature feature) {
+        if (feature == PurifierConfig.Feature.SEARCH_HOT_WORDS) {
+            return new String[]{
+                    SearchHotWordsDelta.CAPSULE_UI_HOOK_ID,
+                    SearchHotWordsDelta.HOT_WORDS_UI_HOOK_ID};
+        }
+        String single = businessHookId(feature);
+        return single.isEmpty() ? new String[0] : new String[]{single};
+    }
+
     private final EnumMap<PurifierConfig.Feature, Boolean> enabledAtStart;
     private final EnumMap<PurifierConfig.Feature, InstallResult> installResults;
     private final boolean profileValidated;
@@ -111,8 +127,14 @@ final class HookTopology {
             if (TargetResolutionPolicy.isManifestManaged(feature)) {
                 InstallResult result = installResults.get(feature);
                 sb.append(" install=").append(result == null ? "PENDING" : result);
-                String hookId = businessHookId(feature);
-                int active = ledger != null && !hookId.isEmpty() && ledger.isActive(hookId) ? 1 : 0;
+                int active = 0;
+                if (ledger != null) {
+                    for (String id : businessHookIds(feature)) {
+                        if (ledger.isActive(id)) {
+                            active++;
+                        }
+                    }
+                }
                 sb.append(" hookInstalled=").append(result == InstallResult.INSTALLED
                         || result == InstallResult.PARTIAL
                         || result == InstallResult.ALREADY_INSTALLED)

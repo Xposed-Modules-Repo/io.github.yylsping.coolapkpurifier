@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.EnumMap;
 import java.util.Map;
 
-/** Eight-feature configuration with a framework/module-owned authoritative store. */
+/** Ten-feature configuration with a framework/module-owned authoritative store. */
 final class PurifierConfig {
     static final String FILE_NAME = "coolapk_purifier_config.json";
     private static final int LEGACY_SCHEMA = 1;

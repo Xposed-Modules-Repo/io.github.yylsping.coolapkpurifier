@@ -189,6 +189,61 @@ public final class PurifierConfigTest {
     }
 
     @Test
+    public void schemaTwoSnapshotMissingSearchKeysFallsBackToDisabledDefaults() {
+        // A 2.5.0-era schema-2 snapshot: only the original eight keys exist.
+        store.seed(("{\"schema\":2,\"revision\":9,"
+                + "\"pendingAdaptation\":\"none\",\"options\":{"
+                + "\"remove_splash_ads\":false,"
+                + "\"remove_feed_sponsor\":true,"
+                + "\"remove_reply_sponsor\":false,"
+                + "\"remove_auto_comment\":true,"
+                + "\"remove_topic_device_recommend\":true,"
+                + "\"remove_related_data\":true,"
+                + "\"remove_same_topic_feed\":true,"
+                + "\"remove_detail_sponsor\":true}}")
+                .getBytes(StandardCharsets.UTF_8));
+
+        PurifierConfig config = config();
+        assertEquals("remoteAuthoritative", config.loadedSource());
+        // Missing search keys fall back to their defaults (off).
+        assertFalse(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        assertFalse(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_RANKINGS));
+        // The original explicit values survive untouched.
+        assertFalse(config.isEnabled(PurifierConfig.Feature.SPLASH));
+        assertTrue(config.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
+        assertFalse(config.isEnabled(PurifierConfig.Feature.REPLY_SPONSOR));
+        assertTrue(config.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
+        assertTrue(config.isEnabled(PurifierConfig.Feature.TOPIC_DEVICE_RECOMMEND));
+        assertTrue(config.isEnabled(PurifierConfig.Feature.RELATED_DATA));
+        assertTrue(config.isEnabled(PurifierConfig.Feature.SAME_TOPIC_FEED));
+        assertTrue(config.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR));
+        assertEquals(9L, config.revision());
+    }
+
+    @Test
+    public void searchFeatureSelectionsRoundTripThroughPersistence() {
+        PurifierConfig config = config();
+        assertFalse(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        assertFalse(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_RANKINGS));
+
+        assertTrue(config.setEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS, true));
+        assertTrue(config.setEnabled(PurifierConfig.Feature.SEARCH_HOT_RANKINGS, true));
+
+        PurifierConfig reloaded = config();
+        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.SEARCH_HOT_RANKINGS));
+        // Untouched features keep their defaults.
+        assertTrue(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
+        assertFalse(reloaded.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
+
+        // The two gates are independent: toggling one never moves the other.
+        assertTrue(reloaded.setEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS, false));
+        PurifierConfig again = config();
+        assertFalse(again.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        assertTrue(again.isEnabled(PurifierConfig.Feature.SEARCH_HOT_RANKINGS));
+    }
+
+    @Test
     public void legacyFileImportIsReadOnlyAndRemoteBecomesAuthoritative() throws Exception {
         File legacy = folder.newFile(PurifierConfig.FILE_NAME);
         byte[] original = ("{\"schema\":1,\"revision\":15,"

@@ -521,6 +521,24 @@ final class Resolve {
                     candidate.evidence.add("layout field maps to R.layout."
                             + layoutMatch);
                 }
+                // Data-field disambiguation (16.6.4 lesson): sibling holders
+                // can share the same R.layout reference and the same holder
+                // contract while binding a different data type — e66 carries
+                // a HolderItem field where wne carries a Card field, and both
+                // pass layout + structure checks for R.layout.search_hot. A
+                // holder without an instance field of the pinned card type is
+                // demoted out of the strict set so it can never be adopted as
+                // the unique CHANGED target; it stays visible as an AMBIGUOUS
+                // candidate for manual adjudication.
+                if (!DexIndex.fieldsOfType(classDef,
+                        Specs.classDescriptorOf(spec.cardClass), false).isEmpty()) {
+                    candidate.evidence.add("data field type: instance field of "
+                            + spec.cardClass);
+                } else {
+                    candidate.strictPass = false;
+                    candidate.evidence.add("WARNING no instance field of card type "
+                            + spec.cardClass + " (sibling-holder data mismatch)");
+                }
                 if (!cardContractHolds(index, spec)) {
                     candidate.evidence.add("WARNING card contract broken on "
                             + spec.cardClass);
@@ -548,10 +566,20 @@ final class Resolve {
             }
             // Layout-adjudicated candidates first: among structurally
             // identical siblings the pinned R.layout reference is the
-            // strongest discriminator a dump can offer.
-            result.candidates.sort((a, b) -> Boolean.compare(
-                    b.evidence.stream().anyMatch(e -> e.startsWith("layout field")),
-                    a.evidence.stream().anyMatch(e -> e.startsWith("layout field"))));
+            // strongest discriminator a dump can offer. Holders carrying an
+            // instance field of the pinned card type rank next (the e66/wne
+            // data-type discriminator).
+            result.candidates.sort((a, b) -> {
+                int layout = Boolean.compare(
+                        b.evidence.stream().anyMatch(e -> e.startsWith("layout field")),
+                        a.evidence.stream().anyMatch(e -> e.startsWith("layout field")));
+                if (layout != 0) {
+                    return layout;
+                }
+                return Boolean.compare(
+                        b.evidence.stream().anyMatch(e -> e.startsWith("data field type")),
+                        a.evidence.stream().anyMatch(e -> e.startsWith("data field type")));
+            });
             finalizeVerdict(result);
             return result;
         }

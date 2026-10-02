@@ -2,19 +2,33 @@
 
 本文档面向维护者，说明当酷安发布新版本时，如何为 `MANIFEST_EXACT` 功能
 （D1 帖子内推广、D2 回复区赞助、D3 同话题动态、D5 话题与机型推荐、
-D6 自动评论提示、RELATED_DATA 帖子相关推荐）生成并验证新的 manifest profile。
+D6 自动评论提示、RELATED_DATA 帖子相关推荐、SEARCH_HOT_WORDS 热门搜索
+与热榜热词、SEARCH_HOT_RANKINGS 搜索页热榜）生成并验证新的 manifest
+profile。
 
 ## 架构速览
 
 | 功能 | 解析来源 | 未知宿主版本行为 |
 | --- | --- | --- |
 | 开屏（SPLASH）、首页信息流（FEED_SPONSOR） | `DYNAMIC_TRUSTED`（成熟的运行时 resolver + DexKit 缓存） | 照常走自身动态策略 |
-| D1 / D2 / D3 / D5 / D6 / RELATED_DATA | `MANIFEST_EXACT`（`assets/coolapk_target_manifest.json` 中按 versionCode 精确命中的 validated profile） | **fail-closed**：不安装对应 Hook，`InstallResult.UNSUPPORTED_VERSION`，不做 nearest fallback，不做模糊 DexKit 猜测 |
+| D1 / D2 / D3 / D5 / D6 / RELATED_DATA / SEARCH_HOT_WORDS / SEARCH_HOT_RANKINGS | `MANIFEST_EXACT`（`assets/coolapk_target_manifest.json` 中按 versionCode 精确命中的 validated profile） | **fail-closed**：不安装对应 Hook，`InstallResult.UNSUPPORTED_VERSION`，不做 nearest fallback，不做模糊 DexKit 猜测 |
+
+SEARCH_HOT_WORDS 对应两个 UI target（`searchHotCapsuleUi` 首页热榜热词
+chips、`searchHotWordsUi` 搜索页「热门搜索」），SEARCH_HOT_RANKINGS 对应
+`searchHotRankingsUi`。三者都是 terminal UI target：offline diff 只比较
+UI target，不允许用 hot-search API / ViewModel / getter / shouldShow 之类
+上游点代替。
 
 manifest 解析本身也是 fail-closed 的：schema 不符、JSON 损坏、versionCode
-缺失/重复、target 缺关键字段，都会让整个 manifest（或整个 profile）不可
-用，而不是静默降级为部分可用。`status=draft` 的 profile 永远不会进入生
-产安装路径。
+缺失/重复、target 缺关键字段、profile 含未知 target key，都会让整个
+manifest 不可用，而不是静默降级为部分可用。`status=draft` 的 profile 永
+远不会进入生产安装路径。注意两个层级的区别：
+
+- validated profile 的**核心 target**（D1/D2/D3/D5/D6 与 relatedData
+  observe-only getter）必须完整，缺失会让整个 manifest parse 失败；
+- UI 子类 target（relatedIconListUi / relatedContentUi / 三个搜索 UI
+  target）是 feature-level 可选的：缺失不会让 profile 失效，而是对应
+  feature/层级单独 fail-closed（`TARGET_MISSING` 或诚实的 `PARTIAL`）。
 
 ## 重要前提：酷安是壳 APK
 
@@ -85,8 +99,8 @@ manifest 解析本身也是 fail-closed 的：schema 不符、JSON 损坏、vers
 ```
 
 单元测试会直接读取真实打包的 manifest 资产做契约回归；然后按
-`manifest-dynamic-goal-v4.2.md` §20 执行实机回归（冷启动、八功能、
-toggle 双向、fail-closed 日志取证）。
+`manifest-dynamic-goal-v4.2.md` §20 执行实机回归（冷启动、全部 10 项
+功能、toggle 双向、fail-closed 日志取证）。
 
 ## Dynamic promotion requirements
 
@@ -139,6 +153,9 @@ codepage 损坏。probe 支持以下参数规避与消歧：
    （16.6.4 的 search_hot 同时被 Card 持有者 wne 与 HolderItem 持有者
    e66 引用）。layout 命中 + 结构合约通过后，仍必须核对**数据字段类型**
    （Card vs HolderItem）与运行时判型链路一致，否则 hook 静默不触发。
+   offline resolver 已把「holder 必须带 cardClass 类型的实例字段」纳入
+   strict contract（缺失时报 WARNING 并移出 strict 候选集，裁决降级为
+   AMBIGUOUS 强制人工复核），并有 smali fixture 单测防止回退。
 2. **obfuscated 名字禁止手工转写**：manifest 里的 Unicode 名字必须程序化
    搬运并对 codepoint 做断言（曾发生 U+0814 误写 U+0B94 导致
    TARGET_MISSING）。

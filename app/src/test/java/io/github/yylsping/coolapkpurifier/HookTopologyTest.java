@@ -173,13 +173,73 @@ public final class HookTopologyTest {
     public void businessHookIdsExistForManifestFeaturesOnly() {
         java.util.Set<String> ids = new java.util.HashSet<>();
         for (PurifierConfig.Feature feature : PurifierConfig.Feature.values()) {
-            String id = HookTopology.businessHookId(feature);
+            String[] featureIds = HookTopology.businessHookIds(feature);
             if (TargetResolutionPolicy.isManifestManaged(feature)) {
-                assertFalse("hook id for " + feature, id.isEmpty());
-                assertTrue("hook id unique for " + feature, ids.add(id));
+                assertTrue("hook ids for " + feature, featureIds.length > 0);
+                for (String id : featureIds) {
+                    assertFalse("hook id empty for " + feature, id.isEmpty());
+                    assertTrue("hook id unique for " + feature, ids.add(id));
+                }
             } else {
-                assertTrue("no business hook for " + feature, id.isEmpty());
+                assertTrue("no business hook for " + feature, featureIds.length == 0);
             }
         }
+    }
+
+    private static String searchHotWordsCount(String summary) {
+        String key = "remove_search_hot_words={";
+        int start = summary.indexOf(key);
+        assertTrue(start >= 0);
+        String segment = summary.substring(start, summary.indexOf('}', start));
+        String marker = "activeHookCount=";
+        return segment.substring(segment.indexOf(marker) + marker.length());
+    }
+
+    @Test
+    public void summaryCountsEverySearchHotWordsLayer() {
+        HookTopology topology = new HookTopology(snapshot(true), true);
+        topology.recordInstallResult(PurifierConfig.Feature.SEARCH_HOT_WORDS,
+                InstallResult.INSTALLED);
+        HookLedger ledger = new HookLedger();
+        ledger.record(HookLedger.Layer.BUSINESS, "remove_search_hot_words",
+                SearchHotWordsDelta.CAPSULE_UI_HOOK_ID, "manifest_exact");
+        ledger.record(HookLedger.Layer.BUSINESS, "remove_search_hot_words",
+                SearchHotWordsDelta.HOT_WORDS_UI_HOOK_ID, "manifest_exact");
+        assertEquals("2", searchHotWordsCount(topology.summaryLine(ledger)));
+    }
+
+    @Test
+    public void summaryCountsCapsuleOnlyPartialAsOne() {
+        HookTopology topology = new HookTopology(snapshot(true), true);
+        topology.recordInstallResult(PurifierConfig.Feature.SEARCH_HOT_WORDS,
+                InstallResult.PARTIAL);
+        HookLedger ledger = new HookLedger();
+        ledger.record(HookLedger.Layer.BUSINESS, "remove_search_hot_words",
+                SearchHotWordsDelta.CAPSULE_UI_HOOK_ID, "manifest_exact");
+        String summary = topology.summaryLine(ledger);
+        assertEquals("1", searchHotWordsCount(summary));
+        assertTrue(summary.contains("hookInstalled=true"));
+    }
+
+    @Test
+    public void summaryCountsSearchPageOnlyPartialAsOne() {
+        HookTopology topology = new HookTopology(snapshot(true), true);
+        topology.recordInstallResult(PurifierConfig.Feature.SEARCH_HOT_WORDS,
+                InstallResult.PARTIAL);
+        HookLedger ledger = new HookLedger();
+        ledger.record(HookLedger.Layer.BUSINESS, "remove_search_hot_words",
+                SearchHotWordsDelta.HOT_WORDS_UI_HOOK_ID, "manifest_exact");
+        assertEquals("1", searchHotWordsCount(topology.summaryLine(ledger)));
+    }
+
+    @Test
+    public void summaryCountsDisabledSearchHotWordsAsZero() {
+        HookTopology topology = new HookTopology(
+                snapshotWith(true, PurifierConfig.Feature.SEARCH_HOT_WORDS), true);
+        HookLedger ledger = new HookLedger();
+        String summary = topology.summaryLine(ledger);
+        assertEquals("0", searchHotWordsCount(summary));
+        assertTrue(summary.contains(
+                "remove_search_hot_words={enabledAtStart=false"));
     }
 }

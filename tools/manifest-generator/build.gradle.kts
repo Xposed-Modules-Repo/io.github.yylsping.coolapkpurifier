@@ -20,4 +20,6 @@ tasks.named<JavaExec>("run") {
 dependencies {
     implementation("org.smali:dexlib2:2.5.2")
     implementation("org.json:json:20240303")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.smali:smali:2.5.2")
 }
