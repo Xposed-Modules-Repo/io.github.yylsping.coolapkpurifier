@@ -11,6 +11,7 @@ import androidx.databinding.DataBindingComponent;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.coolapk.market.model.Card;
+import com.coolapk.market.model.HolderItem;
 
 import org.json.JSONObject;
 import org.junit.Test;
@@ -29,8 +30,65 @@ public final class SearchUiCardHooksTest {
 
     /** Fixture mirroring the host capsule holder contract. */
     public static final class FakeCapsuleHolder extends RecyclerView.ViewHolder {
+        // The verified contract: an owner-declared, non-static Card field.
+        public Card card;
+
         public FakeCapsuleHolder(View itemView, DataBindingComponent component) {
             super(itemView);
+        }
+
+        public void bind(Object data) {
+        }
+    }
+
+    /** e66-like sibling: same shape, but the data field is HolderItem. */
+    public static final class HolderItemOnlyHolder extends RecyclerView.ViewHolder {
+        public HolderItem item;
+
+        public HolderItemOnlyHolder(View itemView, DataBindingComponent component) {
+            super(itemView);
+        }
+
+        public void bind(Object data) {
+        }
+    }
+
+    /** Static Card fields do not satisfy the instance-field contract. */
+    public static final class StaticCardOnlyHolder extends RecyclerView.ViewHolder {
+        public static Card CARD;
+
+        public StaticCardOnlyHolder(View itemView, DataBindingComponent component) {
+            super(itemView);
+        }
+
+        public void bind(Object data) {
+        }
+    }
+
+    /** A non-Card-typed field never satisfies the exact-type contract. */
+    public static final class ObjectFieldHolder extends RecyclerView.ViewHolder {
+        public Object card;
+
+        public ObjectFieldHolder(View itemView, DataBindingComponent component) {
+            super(itemView);
+        }
+
+        public void bind(Object data) {
+        }
+    }
+
+    /** Card field declared on a base class; not inherited by contract. */
+    public static class BaseCardHolder extends RecyclerView.ViewHolder {
+        public Card card;
+
+        public BaseCardHolder(View itemView, DataBindingComponent component) {
+            super(itemView);
+        }
+    }
+
+    public static final class InheritedCardFieldHolder extends BaseCardHolder {
+        public InheritedCardFieldHolder(View itemView, DataBindingComponent component) {
+            super(itemView, component);
         }
 
         public void bind(Object data) {
@@ -123,6 +181,32 @@ public final class SearchUiCardHooksTest {
         assertFalse(SearchUiCardHooks.isExactTarget(null, binder, loader));
         assertFalse(SearchUiCardHooks.isExactTarget(spec(FakeCapsuleHolder.class),
                 null, loader));
+    }
+
+    @Test
+    public void contractRequiresOwnerDeclaredCardInstanceField() throws Exception {
+        ClassLoader loader = getClass().getClassLoader();
+        // Valid holder: owner-declared non-static Card field.
+        assertTrue(SearchUiCardHooks.isExactTarget(spec(FakeCapsuleHolder.class),
+                FakeCapsuleHolder.class.getDeclaredMethod("bind", Object.class),
+                loader));
+        // e66-like sibling: same shape/layout, but the data field is HolderItem.
+        assertFalse(SearchUiCardHooks.isExactTarget(spec(HolderItemOnlyHolder.class),
+                HolderItemOnlyHolder.class.getDeclaredMethod("bind", Object.class),
+                loader));
+        // A static Card field never satisfies the instance-field contract.
+        assertFalse(SearchUiCardHooks.isExactTarget(spec(StaticCardOnlyHolder.class),
+                StaticCardOnlyHolder.class.getDeclaredMethod("bind", Object.class),
+                loader));
+        // Exact type required: an Object-typed field does not qualify.
+        assertFalse(SearchUiCardHooks.isExactTarget(spec(ObjectFieldHolder.class),
+                ObjectFieldHolder.class.getDeclaredMethod("bind", Object.class),
+                loader));
+        // All three validated profiles declare the Card field on the owner
+        // class itself; inherited fields are deliberately not accepted.
+        assertFalse(SearchUiCardHooks.isExactTarget(spec(InheritedCardFieldHolder.class),
+                InheritedCardFieldHolder.class.getDeclaredMethod("bind", Object.class),
+                loader));
     }
 
     private static SearchUiCardHooks.Runtime runtime(String template,

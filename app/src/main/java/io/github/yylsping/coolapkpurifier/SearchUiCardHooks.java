@@ -50,13 +50,18 @@ final class SearchUiCardHooks {
         try {
             Class<?> owner = Class.forName(spec.ownerClass, false, loader);
             Class<?> dataClass = Class.forName(spec.dataClass, false, loader);
+            Class<?> cardClass = Class.forName(spec.cardClass, false, loader);
             Method binder = owner.getDeclaredMethod(spec.methodName, dataClass);
             if (!isExactTarget(spec, binder, loader)) {
                 log.info("search_ui_target_available=false layer=" + layerLabel
-                        + " reason=contract_mismatch descriptor=" + spec.descriptor());
+                        + " reason=contract_mismatch"
+                        + (hasCardInstanceField(owner, cardClass)
+                                ? "" : " detail=missing_card_instance_field")
+                        + " owner=" + spec.ownerClass
+                        + " cardClass=" + spec.cardClass
+                        + " descriptor=" + spec.descriptor());
                 return null;
             }
-            Class<?> cardClass = Class.forName(spec.cardClass, false, loader);
             Method templateGetter = cardClass.getMethod(spec.entityTemplateGetter);
             Method urlGetter = cardClass.getMethod(spec.urlGetter);
             templateGetter.setAccessible(true);
@@ -107,13 +112,36 @@ final class SearchUiCardHooks {
             Class<?> card = Class.forName(spec.cardClass, false, loader);
             Method template = card.getMethod(spec.entityTemplateGetter);
             Method url = card.getMethod(spec.urlGetter);
-            return template.getParameterCount() == 0
-                    && template.getReturnType() == String.class
-                    && url.getParameterCount() == 0
-                    && url.getReturnType() == String.class;
+            if (template.getParameterCount() != 0
+                    || template.getReturnType() != String.class
+                    || url.getParameterCount() != 0
+                    || url.getReturnType() != String.class) {
+                return false;
+            }
+            // e66/wne guard (16.6.4): sibling holders can share layout and
+            // holder contract while binding HolderItem instead of Card. The
+            // holder must declare its own non-static instance field of the
+            // exact card type; all three validated profiles declare it on the
+            // owner class (parent is the shared i5/ob base), so inherited
+            // fields are deliberately not accepted.
+            return hasCardInstanceField(owner, card);
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    /** Exact-type, non-static, owner-declared instance field check. */
+    static boolean hasCardInstanceField(Class<?> owner, Class<?> cardClass) {
+        if (owner == null || cardClass == null) {
+            return false;
+        }
+        for (java.lang.reflect.Field field : owner.getDeclaredFields()) {
+            if (!Modifier.isStatic(field.getModifiers())
+                    && field.getType() == cardClass) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Render-time classification of the bound card; never mutates anything. */

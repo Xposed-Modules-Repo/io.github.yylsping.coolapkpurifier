@@ -103,8 +103,28 @@ final class HookTopology {
                 && isEnabledAtStart(feature) && profileValidated;
     }
 
+    /**
+     * Whether the host versionCode matched a validated profile. When false,
+     * manifest feature installers must not run at all: the topology already
+     * carries the version-level UNSUPPORTED_VERSION verdict, and a feature
+     * level TARGET_MISSING would misreport an unsupported host version as a
+     * broken profile.
+     */
+    boolean hasValidatedProfile() {
+        return profileValidated;
+    }
+
     void recordInstallResult(PurifierConfig.Feature feature, InstallResult result) {
         if (TargetResolutionPolicy.isManifestManaged(feature)) {
+            // Startup verdicts are terminal: a feature disabled at process
+            // start is never installed this process, and with no validated
+            // profile no installer may legitimately run. Never let a later
+            // feature-level result (TARGET_MISSING etc.) overwrite either.
+            InstallResult existing = installResults.get(feature);
+            if (existing == InstallResult.UNSUPPORTED_VERSION
+                    || existing == InstallResult.DISABLED) {
+                return;
+            }
             installResults.put(feature, result);
         }
     }

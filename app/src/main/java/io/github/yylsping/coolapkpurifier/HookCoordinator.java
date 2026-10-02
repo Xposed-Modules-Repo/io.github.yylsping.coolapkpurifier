@@ -259,6 +259,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
     private volatile PurifierConfig config;
     private volatile SettingsHooks settingsHooks;
     private volatile int coolapkMajor;
+    private volatile long hostVersionCodeAtAttach;
 
     /**
      * Loads the persisted switches and installs the settings entry. During
@@ -345,6 +346,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         TargetManifestRepository repository = TargetManifestRepository.load(
                 TargetManifestRepository.moduleApkSource(moduleInfo), log);
         long hostVersion = hostVersionCode(attached);
+        hostVersionCodeAtAttach = hostVersion;
         String hostVersionName = hostVersionName(attached);
         TargetProfile profile = repository == null
                 ? null : repository.validatedProfileFor(hostVersion);
@@ -426,6 +428,22 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         return snapshot;
     }
 
+    /**
+     * Version-level guard (P2-1): without a validated profile the topology
+     * already carries UNSUPPORTED_VERSION for every enabled manifest feature;
+     * installers must not run and must not let a feature-level TARGET_MISSING
+     * overwrite the version-level verdict.
+     */
+    private boolean manifestProfileMissing(PurifierConfig.Feature feature) {
+        if (topology.hasValidatedProfile()) {
+            return false;
+        }
+        log.info("feature=" + feature.key + " source=manifest_exact"
+                + " install=UNSUPPORTED_VERSION reason=no_validated_profile"
+                + " versionCode=" + hostVersionCodeAtAttach);
+        return true;
+    }
+
     /** Manifest-managed installs: fail-closed, feature-aware, structured. */
     private void installManifestFeatures(TargetProfile profile, ClassLoader loader) {
         installDetailSponsorFeature(profile, loader);
@@ -450,6 +468,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (!topology.isEnabledAtStart(feature)) {
             log.info("feature=" + feature.key + " source=manifest_exact"
                     + " install=DISABLED hookInstalled=false");
+            return;
+        }
+        if (manifestProfileMissing(feature)) {
             return;
         }
         InstallResult result = searchHotWordsDelta.install(
@@ -482,6 +503,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     + " install=DISABLED hookInstalled=false");
             return;
         }
+        if (manifestProfileMissing(feature)) {
+            return;
+        }
         InstallResult result = searchHotRankingsDelta.install(
                 profile == null ? null : profile.searchHotRankingsUi,
                 loader);
@@ -507,6 +531,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
             // Recorded as DISABLED by the topology itself; prove it in logs.
             log.info("feature=" + feature.key + " source=manifest_exact"
                     + " install=DISABLED hookInstalled=false");
+            return;
+        }
+        if (manifestProfileMissing(feature)) {
             return;
         }
         InstallResult result = d1DetailSponsorDelta.install(
@@ -539,6 +566,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     + " install=DISABLED hookInstalled=false");
             return;
         }
+        if (manifestProfileMissing(feature)) {
+            return;
+        }
         InstallResult result = d5TopicDeviceRecommendDelta.install(
                 profile == null ? null : profile.topicDeviceRecommend,
                 profile == null ? null : profile.topicDeviceRecommendUi,
@@ -562,6 +592,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         if (!topology.isEnabledAtStart(feature)) {
             log.info("feature=" + feature.key + " source=manifest_exact"
                     + " install=DISABLED hookInstalled=false");
+            return;
+        }
+        if (manifestProfileMissing(feature)) {
             return;
         }
         InstallResult result = relatedDataDelta.install(
@@ -604,6 +637,9 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     + " install=DISABLED hookInstalled=false");
             return;
         }
+        if (manifestProfileMissing(feature)) {
+            return;
+        }
         InstallResult result = d6AutoCommentDelta.install(
                 profile == null ? null : profile.autoComment,
                 profile == null ? null : profile.autoCommentPrompt,
@@ -629,13 +665,17 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     + " install=DISABLED hookInstalled=false");
             return;
         }
+        if (manifestProfileMissing(feature)) {
+            return;
+        }
         InstallResult result;
         if (spec instanceof ReplySponsorTargetSpec) {
             result = d2ReplySponsorReplacement.install((ReplySponsorTargetSpec) spec, loader);
         } else if (spec instanceof SameTopicTargetSpec) {
             result = d3SameTopicReplacement.install((SameTopicTargetSpec) spec, loader);
         } else {
-            // Enabled, but no validated profile/target for this host version.
+            // Enabled with a validated profile, but no target for this host
+            // version (case B: feature-level missing, not version-level).
             result = topology.installResult(feature) != null
                     ? topology.installResult(feature) : InstallResult.TARGET_MISSING;
             log.info("feature=" + feature.key + " source=manifest_exact"

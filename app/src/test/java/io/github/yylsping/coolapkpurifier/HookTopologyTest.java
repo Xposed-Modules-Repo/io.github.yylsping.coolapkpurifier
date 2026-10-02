@@ -151,6 +151,55 @@ public final class HookTopologyTest {
     }
 
     @Test
+    public void unsupportedVersionVerdictCannotBeOverwrittenByInstallerResults() {
+        // Unknown host version (no validated profile) + all features enabled:
+        // the version-level verdict is terminal for every manifest feature.
+        HookTopology topology = new HookTopology(snapshot(true), false);
+        assertFalse(topology.hasValidatedProfile());
+        for (PurifierConfig.Feature feature : PurifierConfig.Feature.values()) {
+            if (!TargetResolutionPolicy.isManifestManaged(feature)) {
+                continue;
+            }
+            assertFalse(topology.shouldInstallManifestFeature(feature));
+            assertEquals(InstallResult.UNSUPPORTED_VERSION,
+                    topology.installResult(feature));
+            // An installer that erroneously ran must not degrade the verdict.
+            topology.recordInstallResult(feature, InstallResult.TARGET_MISSING);
+            assertEquals(InstallResult.UNSUPPORTED_VERSION,
+                    topology.installResult(feature));
+        }
+    }
+
+    @Test
+    public void disabledFeatureStaysDisabledEvenWithoutProfile() {
+        HookTopology topology = new HookTopology(
+                snapshotWith(true, PurifierConfig.Feature.SEARCH_HOT_WORDS), false);
+        assertFalse(topology.hasValidatedProfile());
+        assertEquals(InstallResult.DISABLED,
+                topology.installResult(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        topology.recordInstallResult(PurifierConfig.Feature.SEARCH_HOT_WORDS,
+                InstallResult.TARGET_MISSING);
+        assertEquals(InstallResult.DISABLED,
+                topology.installResult(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+    }
+
+    @Test
+    public void knownProfileMissingTargetRecordsFeatureLevelTargetMissing() {
+        // Validated profile present: a genuinely missing target is a
+        // feature-level TARGET_MISSING, never a version-level verdict.
+        HookTopology topology = new HookTopology(snapshot(true), true);
+        assertTrue(topology.hasValidatedProfile());
+        topology.recordInstallResult(PurifierConfig.Feature.SEARCH_HOT_RANKINGS,
+                InstallResult.TARGET_MISSING);
+        assertEquals(InstallResult.TARGET_MISSING,
+                topology.installResult(PurifierConfig.Feature.SEARCH_HOT_RANKINGS));
+        topology.recordInstallResult(PurifierConfig.Feature.SEARCH_HOT_WORDS,
+                InstallResult.PARTIAL);
+        assertEquals(InstallResult.PARTIAL,
+                topology.installResult(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+    }
+
+    @Test
     public void summaryLineProvesDisabledFeatureCarriesNoHook() {
         HookTopology topology = new HookTopology(
                 snapshotWith(true, PurifierConfig.Feature.SAME_TOPIC_FEED), true);
