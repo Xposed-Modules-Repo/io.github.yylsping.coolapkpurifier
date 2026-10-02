@@ -114,3 +114,34 @@ toggle 双向、fail-closed 日志取证）。
 - 不把"方法名没变"当成充分证据；
 - 不使用用户可控 UI 文案作为唯一判定依据；
 - 每个 feature 使用独立 resolver，没有横跨所有业务的巨大 query。
+
+## probe 的 Unicode 安全与消歧模式（16.6.4 适配新增）
+
+混淆名含高位 Unicode（如 U+0788 `ވ`），经 bash/Gradle 传参会按控制台
+codepage 损坏。probe 支持以下参数规避与消歧：
+
+- `--class-file <utf8 file>`：从 UTF-8 文件读类 descriptor；
+- `--out <utf8 file>`：结果写 UTF-8 文件，避免控制台乱码；
+- `--list-prefix <Lcom/example/;>`：按前缀列类；
+- `--find-method <(params)ret[,static]>`：按签名全库找方法
+  （用于 Compose assembler 类 target）；
+- `--find-clinit-layout <layout_name>`：扫全库 clinit，找
+  `sget R$layout-><name>` 的类与落点字段（layout → holder 反查）；
+- `--find-field-type <Ltype;>`：按字段类型反查持有者
+  （用于 callback/内部类链路）；
+- `--clinit`：附带 dump 该类 clinit 指令（确认 layout 字段映射）。
+
+以上参数的值均可写 `@<file>` 从 UTF-8 文件读取。
+
+## 16.6.4 教训（写入裁决纪律）
+
+1. **layoutName 消歧不是万能的**：同一 layout 可被多个 holder 共用
+   （16.6.4 的 search_hot 同时被 Card 持有者 wne 与 HolderItem 持有者
+   e66 引用）。layout 命中 + 结构合约通过后，仍必须核对**数据字段类型**
+   （Card vs HolderItem）与运行时判型链路一致，否则 hook 静默不触发。
+2. **obfuscated 名字禁止手工转写**：manifest 里的 Unicode 名字必须程序化
+   搬运并对 codepoint 做断言（曾发生 U+0814 误写 U+0B94 导致
+   TARGET_MISSING）。
+3. **Android 15 内存布局**：匿名区全部带 `[anon:...]` 名字，dump 脚本过滤
+   条件必须接受该前缀；业务 dex 在 rw-p 区且 magic 被整体抹除（区域起点
+   即 version 字段），恢复 = 前置 "dex\n" + 按 header file_size 截断。

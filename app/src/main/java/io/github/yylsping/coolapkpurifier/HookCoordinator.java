@@ -355,8 +355,6 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
         topology = new HookTopology(effectiveSnapshot(), profile != null);
 
         installManifestFeatures(profile, context.getClassLoader());
-        // TEMPORARY diagnostic for the staged search-UI goal; remove before acceptance.
-        SearchUiDiagnostic.install(module, log, context.getClassLoader());
 
         // The embedded UI cleaner depends only on the exact fragment class,
         // never on the resolver pipeline or the decision observer.
