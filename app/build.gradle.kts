@@ -21,8 +21,8 @@ android {
         applicationId = "io.github.yylsping.coolapkpurifier"
         minSdk = 28
         targetSdk = 35
-        versionCode = 16
-        versionName = "2.5.0"
+        versionCode = 17
+        versionName = "2.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
