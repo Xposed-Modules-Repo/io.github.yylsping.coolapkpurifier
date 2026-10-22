@@ -43,6 +43,17 @@ manifest 不可用，而不是静默降级为部分可用。`status=draft` 的 p
 
 ## 适配步骤
 
+当前 generator 扫描 8 个 target key，并不覆盖一个完整 profile 的全部
+14 个 target。`detailSponsorUi`、`topicDeviceRecommendUi`、
+`autoCommentPrompt`、`relatedData`、`relatedIconListUi`、`relatedContentUi`
+仍须分别审查。不要把生成的 draft 直接当作完整 profile，尤其不能漏掉
+observe-only 层对应的 UI terminal。16.6.5 的实机验证概况见
+[适配说明](ADAPTATION_16_6_5.md)。
+
+默认 baseline 是 manifest 中第一个 validated profile。需要与最新已适配
+版本比较时，应先导出该版本为独立 manifest，再显式传入 `--baseline`；
+`diff --old` 同样使用该独立 manifest，避免实际比较的是更早版本。
+
 ### 1. 生成 draft
 
 ```bash

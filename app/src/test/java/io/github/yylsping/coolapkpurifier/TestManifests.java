@@ -8,6 +8,7 @@ final class TestManifests {
     static final long COOLAPK_16_6_1 = 2_608_212L;
     static final long COOLAPK_16_6_2 = 2_609_151L;
     static final long COOLAPK_16_6_4 = 2_609_291L;
+    static final long COOLAPK_16_6_5 = 2_610_162L;
 
     private TestManifests() {
     }

@@ -44,15 +44,23 @@ history-apks/
 AGENTS.md
 CLAUDE.md
 GEMINI.md
-*prompt*.md
-*PROMPT*.md
-*提示词*.md
+SKILL.md
+SKILLS.md
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.md
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.txt
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.json
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.jsonl
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.yaml
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.yml
+*[Pp][Rr][Oo][Mm][Pp][Tt]*.toml
+*.prompt
+*提示词*
 *规则*.md
 prompts/
-/.dsh/
-/.codex/
-/.claude/
-/.gemini/
+.dsh/
+.codex/
+.claude/
+.gemini/
 
 # Local experiment notes, device captures and logs
 processing*/
