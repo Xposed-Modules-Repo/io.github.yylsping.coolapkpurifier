@@ -88,10 +88,13 @@ Dialog 承载；返回后原生设置及导航仍在，不唤起模块 Activity�
 置于 `/data/local/tmp/processing/`；原始数据与截图保存在本地忽略目录。
 本轮只有本地开发和设备验收，未执行远程写入。
 
-最终候选包：`dist/coolapk-purifier-v2.7.0.apk`。已核对设备安装包与本地
-候选包的 SHA-256 一致，包内 manifest 资产与源码一致，临时探针及旧配置
-Activity / 写入器均不在交付 DEX 中。
+发布包：`dist/coolapk-purifier-v2.7.0.apk`，使用历史一致的正式私钥签名。
+复用实机验收候选包的编译产物，增量打包仅更新内嵌源码版本记录，DEX、
+资源与其他 ZIP 条目均与候选包一致，未执行 clean。构建提交为
+`1859e5ac0c9104e8caa020f8a0c42c7ce4189ec1`；后续发布提交仅补充此产物记录。
+包内 manifest 资产与源码一致，临时探针及旧配置 Activity / 写入器均不在
+交付 DEX 中。
 
 ```text
-SHA-256: ba39055f6d5847085069333965f9ab5d8fdc7e1eb305a06a151ab9fa053cab17
+SHA-256: d4696db1abba2a3ba6ed54e58eb8d57f9cd535971e7b005c94ec033fe2a1f2a1
 ```
