@@ -59,7 +59,7 @@ public final class PurifierConfigTest {
         assertEquals(PurifierConfig.PendingKind.DEFAULT, reloaded.pendingKind());
         assertTrue(reloaded.isEnabled(PurifierConfig.Feature.SPLASH));
         assertFalse(reloaded.isEnabled(PurifierConfig.Feature.AUTO_COMMENT));
-        assertEquals("remoteAuthoritative", reloaded.loadedSource());
+        assertEquals("storeAuthoritative", reloaded.loadedSource());
         assertEquals(1, store.persistentWriteCount());
     }
 
@@ -163,7 +163,7 @@ public final class PurifierConfigTest {
         assertTrue(config.isEnabled(PurifierConfig.Feature.DETAIL_SPONSOR));
         assertTrue(config.isEnabled(PurifierConfig.Feature.FEED_SPONSOR));
         assertFalse(config.isEnabled(PurifierConfig.Feature.RELATED_DATA));
-        assertEquals("remoteMigratedSchema1To2", config.loadedSource());
+        assertEquals("storeMigratedSchema1To2", config.loadedSource());
 
         String rewritten = new String(store.read(), StandardCharsets.UTF_8);
         assertTrue(rewritten.contains("\"schema\":2"));
@@ -204,7 +204,7 @@ public final class PurifierConfigTest {
                 .getBytes(StandardCharsets.UTF_8));
 
         PurifierConfig config = config();
-        assertEquals("remoteAuthoritative", config.loadedSource());
+        assertEquals("storeAuthoritative", config.loadedSource());
         // Missing search keys fall back to their defaults (off).
         assertFalse(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
         assertFalse(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_RANKINGS));
@@ -258,7 +258,7 @@ public final class PurifierConfigTest {
         PurifierConfig imported = new PurifierConfig(store,
                 new PurifierConfig.LegacyFileSource(legacy), null);
 
-        assertEquals("legacyImportedToRemote", imported.loadedSource());
+        assertEquals("legacyImportedToStore", imported.loadedSource());
         assertEquals(15L, imported.revision());
         assertFalse(imported.isEnabled(PurifierConfig.Feature.SPLASH));
         assertArrayEquals(original, Files.readAllBytes(legacy.toPath()));

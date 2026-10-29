@@ -3,6 +3,7 @@ package io.github.yylsping.coolapkpurifier;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -12,20 +13,12 @@ import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 /**
- * Single ownership boundary for every byte used by the injected module.
- *
- * <p>The Coolapk process reads configuration directly from the framework-owned
- * libxposed RemotePreferences view. That view is deliberately treated as
- * read-only: configuration writes are performed only by the module's visible
- * {@link ModuleConfigActivity}. Resolver targets use the same read-only
- * framework snapshot plus an in-process write overlay; the visible Activity
- * can persist that bounded overlay on the user's next settings visit. Normal
- * Coolapk startup therefore neither starts the module process nor writes into
- * Coolapk's private directories. Missing or unavailable framework storage
- * fails closed without a host-private fallback.</p>
+ * Host-private configuration and resolver snapshots. The old framework view
+ * is read only, consulted once for migration when a host snapshot is absent.
+ * Diagnostics remain bounded in memory and the framework log.
  */
 final class ModuleStorage {
-    static final String INVARIANT = "ZERO_HOST_PRIVATE_WRITE";
+    static final String INVARIANT = "HOST_PRIVATE_ATOMIC_STORAGE";
 
     private final ConfigStore configStore;
     private final ResolverCacheStore cacheStore;
@@ -46,7 +39,7 @@ final class ModuleStorage {
     }
 
     /** Builds the graph without touching the target Context or filesystem. */
-    static ModuleStorage framework(XposedModule module, ModuleLog log) {
+    static ModuleStorage hostPrivate(XposedModule module, ModuleLog log) {
         HostDataMutationGuard guard = new HostDataMutationGuard();
         DiagnosticSink diagnostics = new RingDiagnosticSink(128, log);
         boolean advertised = false;
@@ -57,10 +50,10 @@ final class ModuleStorage {
             info(log, "storage injected capability read failed error=" + describe(failure));
         }
         ReadOnlyRemoteBridge bridge = new FrameworkReadOnlyBridge(module, advertised, log);
-        ConfigStore config = new ReadOnlyRemoteBlobStore(
-                bridge, ModuleStorageContract.CONFIG_KEY);
-        ResolverCacheStore cache = new ReadThroughMemoryBlobStore(
-                bridge, ModuleStorageContract.CACHE_KEY);
+        ConfigStore config = new HostPrivateBlobStore(
+                ModuleStorageContract.CONFIG_KEY, guard, log);
+        ResolverCacheStore cache = new HostPrivateBlobStore(
+                ModuleStorageContract.CACHE_KEY, guard, log);
         return new ModuleStorage(config, cache, diagnostics, guard, bridge, log);
     }
 
@@ -72,29 +65,52 @@ final class ModuleStorage {
                 guard, null, null);
     }
 
-    static ModuleStorage readOnlyBackedForTest(ReadOnlyRemoteBridge bridge) {
+    static ModuleStorage hostBackedForTest(ReadOnlyRemoteBridge bridge) {
         HostDataMutationGuard guard = new HostDataMutationGuard();
-        ConfigStore config = new ReadOnlyRemoteBlobStore(
-                bridge, ModuleStorageContract.CONFIG_KEY);
-        return new ModuleStorage(config, new ReadThroughMemoryBlobStore(
-                bridge, ModuleStorageContract.CACHE_KEY),
+        return new ModuleStorage(
+                new HostPrivateBlobStore(ModuleStorageContract.CONFIG_KEY, guard, null),
+                new HostPrivateBlobStore(ModuleStorageContract.CACHE_KEY, guard, null),
                 new RingDiagnosticSink(128, null), guard, bridge, null);
     }
 
-    /** Performs one read-only framework capability probe at Application.attach. */
-    void attachContext(Context ignored) {
-        if (remoteBridge == null) {
-            return;
+    /** Binds only after Application.attach supplies the host context. */
+    void attachContext(Context context) {
+        if (context != null) attachFiles(context.getFilesDir());
+    }
+
+    void attachFiles(File filesDir) {
+        if (configStore instanceof HostPrivateBlobStore) {
+            HostPrivateBlobStore config = (HostPrivateBlobStore) configStore;
+            HostPrivateBlobStore cache = (HostPrivateBlobStore) cacheStore;
+            config.attach(filesDir);
+            cache.attach(filesDir);
+            if ((!config.hasSnapshot() || !cache.hasSnapshot()) && remoteBridge != null) {
+                ProbeResult probe = remoteBridge.connect();
+                info(log, "storage migration frameworkReadable=" + probe.available
+                        + " detail=" + probe.detail + " frameworkWrites=false");
+                if (!cache.hasSnapshot()) {
+                    byte[] previous = remoteBridge.read(ModuleStorageContract.CACHE_KEY);
+                    if (ResolutionCache.isValidSnapshot(previous)) {
+                        info(log, "storage resolver cache imported="
+                                + cache.write(previous, "cacheSaveTargets"));
+                    }
+                }
+            }
+            info(log, "storage backend=coolapkPrivateFiles configAuthoritative=true"
+                    + " moduleProcessStartRequired=false frameworkWrites=false");
+        } else if (remoteBridge != null) {
+            remoteBridge.connect();
         }
-        ProbeResult probe = remoteBridge.connect();
-        info(log, "storage capability backend=" + remoteBridge.backendName()
-                + " available=" + probe.available
-                + " probeWrite=false"
-                + " detail=" + probe.detail
-                + " configMode=frameworkReadOnly"
-                + " cacheMode=frameworkReadOnly+processMemoryPendingHandoff"
-                + " moduleProcessStartRequired=false"
-                + " fallback=" + (probe.available ? "none" : "defaultsOrLegacyReadOnly"));
+    }
+
+    PurifierConfig.LegacySource legacyConfiguration() {
+        return new PurifierConfig.LegacySource() {
+            @Override public byte[] read() {
+                return remoteBridge == null ? null
+                        : remoteBridge.read(ModuleStorageContract.CONFIG_KEY);
+            }
+            @Override public String description() { return "frameworkReadOnlyMigration"; }
+        };
     }
 
     ConfigStore configStore() {
@@ -111,10 +127,6 @@ final class ModuleStorage {
 
     HostDataMutationGuard mutationGuard() {
         return guard;
-    }
-
-    boolean isRemoteAvailable() {
-        return configStore.isAvailable();
     }
 
     String auditLine() {
@@ -213,95 +225,6 @@ final class ModuleStorage {
         public synchronized String backendName() {
             return available ? "libxposedFrameworkRemotePreferencesReadOnly"
                     : "remotePreferencesReadUnavailable";
-        }
-    }
-
-    private static final class ReadOnlyRemoteBlobStore implements ConfigStore {
-        private final ReadOnlyRemoteBridge bridge;
-        private final String key;
-
-        ReadOnlyRemoteBlobStore(ReadOnlyRemoteBridge bridge, String key) {
-            this.bridge = bridge;
-            this.key = key;
-        }
-
-        @Override
-        public byte[] read() {
-            return bridge.read(key);
-        }
-
-        /** Injected code never owns a writable framework preference handle. */
-        @Override
-        public boolean write(byte[] value, String reason) {
-            return false;
-        }
-
-        @Override
-        public boolean isAvailable() {
-            return bridge.isAvailable();
-        }
-
-        @Override
-        public String backendName() {
-            return bridge.backendName();
-        }
-
-        @Override
-        public int persistentWriteCount() {
-            return 0;
-        }
-    }
-
-    /**
-     * Read-through resolver cache with a process-local write overlay. Resolver
-     * work remains immediately reusable in the current process, while a later
-     * user-opened configuration Activity may hand the bounded snapshot to the
-     * module-owned writer. No injected write reaches framework or host disk.
-     */
-    static final class ReadThroughMemoryBlobStore implements ResolverCacheStore {
-        private final ReadOnlyRemoteBridge bridge;
-        private final String key;
-        private byte[] overlay;
-
-        ReadThroughMemoryBlobStore(ReadOnlyRemoteBridge bridge, String key) {
-            this.bridge = bridge;
-            this.key = key;
-        }
-
-        @Override
-        public synchronized byte[] read() {
-            if (overlay != null) {
-                return overlay.clone();
-            }
-            byte[] remote = bridge.read(key);
-            return remote == null ? null : remote.clone();
-        }
-
-        @Override
-        public synchronized boolean write(byte[] value, String reason) {
-            if (value == null || value.length > ModuleStorageContract.maxBytesForKey(key)
-                    || !ModuleStorageContract.isValidWriteReason(key, reason)) {
-                return false;
-            }
-            overlay = value.clone();
-            return true;
-        }
-
-        @Override
-        public boolean isAvailable() {
-            return bridge.isAvailable();
-        }
-
-        @Override
-        public String backendName() {
-            return bridge.isAvailable()
-                    ? "frameworkReadOnly+processMemoryPendingHandoff"
-                    : "processMemoryPendingHandoff";
-        }
-
-        @Override
-        public int persistentWriteCount() {
-            return 0;
         }
     }
 

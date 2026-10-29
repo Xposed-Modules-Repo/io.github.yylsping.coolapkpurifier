@@ -1,7 +1,5 @@
 package io.github.yylsping.coolapkpurifier;
 
-import android.content.Context;
-
 import org.json.JSONObject;
 
 import java.io.File;
@@ -10,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.EnumMap;
 import java.util.Map;
 
-/** Ten-feature configuration with a framework/module-owned authoritative store. */
+/** Ten-feature configuration with an atomic host-private authoritative store. */
 final class PurifierConfig {
     static final String FILE_NAME = "coolapk_purifier_config.json";
     private static final int LEGACY_SCHEMA = 1;
@@ -78,9 +76,9 @@ final class PurifierConfig {
     private String loadedSource;
     private boolean rewriteAfterDecode;
 
-    static PurifierConfig load(Context context, ConfigStore store, ModuleLog log) {
-        File legacyFile = new File(context.getFilesDir(), FILE_NAME);
-        return new PurifierConfig(store, new LegacyFileSource(legacyFile), log);
+    static PurifierConfig load(ConfigStore store,
+                               LegacySource migration, ModuleLog log) {
+        return new PurifierConfig(store, migration, log);
     }
 
     PurifierConfig(ConfigStore store, LegacySource legacySource, ModuleLog log) {
@@ -115,7 +113,7 @@ final class PurifierConfig {
         return loadedSource;
     }
 
-    /** Validated snapshot handed to the visible module UI for one-time import. */
+    /** Validated snapshot of the current configuration. */
     synchronized byte[] serializedSnapshot() {
         return encode();
     }
@@ -163,26 +161,26 @@ final class PurifierConfig {
     }
 
     private void loadInitial() {
-        byte[] remoteRaw = store.read();
-        boolean remoteWasPresent = remoteRaw != null;
-        byte[] remote = bounded(remoteRaw);
-        if (decode(remote)) {
-            loadedSource = "remoteAuthoritative";
+        byte[] storedRaw = store.read();
+        boolean storedWasPresent = storedRaw != null;
+        byte[] stored = bounded(storedRaw);
+        if (decode(stored)) {
+            loadedSource = "storeAuthoritative";
             if (rewriteAfterDecode && persist("configSchemaUpgrade1To2")) {
-                loadedSource = "remoteMigratedSchema1To2";
+                loadedSource = "storeMigratedSchema1To2";
             }
             info("config loaded source=" + loadedSource + " backend=" + store.backendName()
                     + " revision=" + revision + " pending=" + pendingKind.value);
             return;
         }
 
-        if (!remoteWasPresent && legacySource != null) {
+        if (!storedWasPresent && legacySource != null) {
             byte[] legacy = bounded(legacySource.read());
             if (decode(legacy)) {
                 loadedSource = "legacyReadOnly";
                 boolean migrated = persist("legacyConfigImport");
                 if (migrated) {
-                    loadedSource = "legacyImportedToRemote";
+                    loadedSource = "legacyImportedToStore";
                 }
                 info("config legacy import source=" + legacySource.description()
                         + " migrated=" + migrated + " authoritative=" + loadedSource);
@@ -191,8 +189,8 @@ final class PurifierConfig {
         }
 
         resetDefaults();
-        loadedSource = remoteWasPresent ? "remoteInvalidDefaults" : "defaults";
-        boolean persisted = persist(remoteWasPresent
+        loadedSource = storedWasPresent ? "storeInvalidDefaults" : "defaults";
+        boolean persisted = persist(storedWasPresent
                 ? "configRepairDefaults" : "configCreateDefaults");
         info("config initialized source=" + loadedSource + " persisted=" + persisted
                 + " backend=" + store.backendName());

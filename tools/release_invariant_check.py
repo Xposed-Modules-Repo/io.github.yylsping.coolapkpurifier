@@ -23,12 +23,8 @@ import zipfile
 
 ANDROID = "{http://schemas.android.com/apk/res/android}"
 
-ALLOWED_ACTIVITIES = {
-    "io.github.yylsping.coolapkpurifier.ModuleConfigActivity",
-}
-ALLOWED_PROVIDERS = {
-    "io.github.libxposed.service.XposedProvider",
-}
+ALLOWED_ACTIVITIES = set()
+ALLOWED_PROVIDERS = set()
 
 BACKGROUND_PERMISSION_DENYLIST = [
     "android.permission.FOREGROUND_SERVICE",
@@ -95,9 +91,16 @@ NETWORK_DEX_DENYLIST = [
     b"api.github.com",
 ]
 
+FRAMEWORK_WRITER_DENYLIST = [
+    (r"XposedServiceHelper", "removed framework writer service"),
+    (r"ModuleConfigActivity", "removed cross-app configuration Activity"),
+    (r"startActivityForResult", "cross-app configuration launch"),
+    (r"SharedPreferences\.Editor", "framework preference editor"),
+    (r"\.edit\s*\(", "preference write handle"),
+]
+
 PRODUCTION_DEPENDENCY_ALLOWLIST = {
     "io.github.libxposed:api",
-    "io.github.libxposed:service",
     "org.jetbrains.kotlin:kotlin-stdlib",
     "org.luckypray:dexkit",
 }
@@ -234,6 +237,7 @@ def main():
     scan_source_denylist(POLLING_SOURCE_DENYLIST, "source.pollingDenylist")
     scan_source_denylist(NETWORK_SOURCE_DENYLIST, "source.networkDenylist")
     scan_source_denylist(UPDATER_ABSENCE_DENYLIST, "source.updaterAbsence")
+    scan_source_denylist(FRAMEWORK_WRITER_DENYLIST, "source.frameworkWriterAbsence")
     check_watchdog_shape()
     check_dex(apk)
     check_dependencies()

@@ -24,9 +24,7 @@ import java.util.Map;
  * splash-decision target when that host capability exists, so an Activity-only
  * schema-3 snapshot can never certify complete splash coverage. Older snapshots
  * are deliberately NOT migrated and NOT readable: a miss re-resolves into a
- * bounded process overlay. A validated snapshot can later be persisted only
- * when the user opens the visible module configuration activity, while
- * abandoned host files stay untouched.
+ * bounded atomic snapshot in the host's private files directory.
  *
  * <p>Every lookup reports a structured outcome ({@link CacheLookup}) so logs
  * can distinguish "no cache" from "cache rejected by identity/format"
@@ -44,7 +42,7 @@ final class ResolutionCache {
     /** Validates a cache snapshot before a cross-process foreground handoff. */
     static boolean isValidSnapshot(byte[] bytes) {
         if (bytes == null || bytes.length == 0
-                || bytes.length > ModuleStorageContract.CACHE_HANDOFF_MAX_BYTES) {
+                || bytes.length > ModuleStorageContract.CACHE_MAX_BYTES) {
             return false;
         }
         try {
@@ -268,7 +266,7 @@ final class ResolutionCache {
      * to at most 5, then serializes the real UTF-8 root. If root metadata
      * still exceeds the 1 MiB budget, entries are evicted again and the root
      * is re-serialized until both limits hold. The complete value is then
-     * atomically accepted by the framework-owned backend; failure leaves its
+     * atomically accepted by the host-private backend; failure leaves its
      * prior value untouched.
      */
     private boolean writeJson(JSONObject root, String protectKey, String reason) {

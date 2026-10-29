@@ -140,7 +140,7 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     ApplicationInfo moduleInfo) {
         this.module = module;
         this.log = log;
-        this.storage = ModuleStorage.framework(module, log);
+        this.storage = ModuleStorage.hostPrivate(module, log);
         this.primaryLoader = primaryLoader;
         this.moduleInfo = moduleInfo;
         this.exposureLedger = new FeatureExposureLedger(log::info);
@@ -279,11 +279,10 @@ final class HookCoordinator implements SplashHooks.ActivityObserver,
                     Context usable = candidate != null ? candidate : context;
                     coolapkMajor = readCoolapkMajor(usable);
                     PurifierConfig loaded = PurifierConfig.load(
-                            usable, storage.configStore(), log);
+                            storage.configStore(), storage.legacyConfiguration(), log);
                     featureGate.bind(loaded, coolapkMajor);
                     settingsHooks = new SettingsHooks(
-                            module, hookLedger, log, loaded,
-                            storage.resolverCacheStore(), coolapkMajor);
+                            module, hookLedger, log, loaded, coolapkMajor);
                     config = loaded;
                     log.info("configuration initialized coolapkMajor=" + coolapkMajor
                             + " pending=" + loaded.pendingKind()

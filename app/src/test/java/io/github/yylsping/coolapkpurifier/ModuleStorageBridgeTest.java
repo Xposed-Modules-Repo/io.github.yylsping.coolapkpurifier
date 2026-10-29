@@ -12,82 +12,46 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Contract tests for the no-process-start storage split. */
+/** Migration is optional; host-private snapshots remain authoritative offline. */
 public final class ModuleStorageBridgeTest {
-    @Test
-    public void injectedSideReadsFrameworkConfigButCannotWriteIt() {
-        FakeReadOnlyBridge bridge = new FakeReadOnlyBridge(true);
-        byte[] config = "{\"schema\":1}".getBytes(StandardCharsets.UTF_8);
-        bridge.seed(ModuleStorageContract.CONFIG_KEY, config);
-        ModuleStorage storage = ModuleStorage.readOnlyBackedForTest(bridge);
+    @org.junit.Rule public org.junit.rules.TemporaryFolder folder = new org.junit.rules.TemporaryFolder();
 
-        assertFalse(storage.isRemoteAvailable());
-        storage.attachContext(null);
-        assertTrue(storage.isRemoteAvailable());
-        assertArrayEquals(config, storage.configStore().read());
-        assertFalse(storage.configStore().write(config, "configCreateDefaults"));
-
-        HostDataMutationGuard.Snapshot snapshot = storage.mutationGuard().snapshot();
-        assertEquals(0L, snapshot.hostPrivateWrites);
-        assertEquals(0L, snapshot.remoteWrites);
-        assertEquals(0, storage.configStore().persistentWriteCount());
+    @Test public void hostConfigurationWorksWhenFrameworkIsUnavailable() {
+        FakeReadOnlyBridge remote = new FakeReadOnlyBridge(false);
+        ModuleStorage storage = ModuleStorage.hostBackedForTest(remote);
+        storage.attachFiles(folder.getRoot());
+        PurifierConfig config = new PurifierConfig(storage.configStore(), storage.legacyConfiguration(), null);
+        assertTrue(config.setEnabled(PurifierConfig.Feature.AUTO_COMMENT, true));
+        assertTrue(new java.io.File(folder.getRoot(), PurifierConfig.FILE_NAME).isFile());
+        assertEquals(0, storage.mutationGuard().snapshot().remoteWrites);
+        assertTrue(storage.mutationGuard().snapshot().filesDirWrites >= 2);
     }
 
-    @Test
-    public void resolverCacheUsesReadThroughSnapshotAndProcessOverlay() {
+    @Test public void oldFrameworkConfigAndCacheImportWithoutRemoteWrites() {
         FakeReadOnlyBridge remote = new FakeReadOnlyBridge(true);
-        byte[] prior = "{\"schema\":3,\"entries\":[]}".getBytes(StandardCharsets.UTF_8);
-        remote.seed(ModuleStorageContract.CACHE_KEY, prior);
-        ModuleStorage connected = ModuleStorage.readOnlyBackedForTest(remote);
-        connected.attachContext(null);
-        assertArrayEquals(prior, connected.resolverCacheStore().read());
-
-        byte[] replacement = "{\"schema\":3,\"entries\":[{}]}"
-                .getBytes(StandardCharsets.UTF_8);
-        assertTrue(connected.resolverCacheStore().write(replacement, "cacheSaveTargets"));
-        assertArrayEquals(replacement, connected.resolverCacheStore().read());
-        assertArrayEquals(prior, remote.read(ModuleStorageContract.CACHE_KEY));
-        assertEquals("frameworkReadOnly+processMemoryPendingHandoff",
-                connected.resolverCacheStore().backendName());
-        assertEquals(0, connected.resolverCacheStore().persistentWriteCount());
-        assertEquals(0L, connected.mutationGuard().snapshot().remoteWrites);
-
-        ModuleStorage first = ModuleStorage.readOnlyBackedForTest(
-                new FakeReadOnlyBridge(false));
-        byte[] cache = "{\"schema\":3}".getBytes(StandardCharsets.UTF_8);
-
-        assertTrue(first.resolverCacheStore().write(cache, "cacheSaveTargets"));
-        assertArrayEquals(cache, first.resolverCacheStore().read());
-        assertEquals("processMemoryPendingHandoff",
-                first.resolverCacheStore().backendName());
-        assertEquals(0, first.resolverCacheStore().persistentWriteCount());
-        assertEquals(0L, first.mutationGuard().snapshot().remoteWrites);
-
-        ModuleStorage nextProcess = ModuleStorage.readOnlyBackedForTest(
-                new FakeReadOnlyBridge(false));
-        assertNull(nextProcess.resolverCacheStore().read());
+        ModuleStorage.MemoryBlobStore old = new ModuleStorage.MemoryBlobStore("old", new HostDataMutationGuard());
+        PurifierConfig prior = new PurifierConfig(old, null, null);
+        assertTrue(prior.setEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS, true));
+        remote.seed(ModuleStorageContract.CONFIG_KEY, old.read());
+        byte[] cache = "{\"schema\":4,\"entries\":[]}".getBytes(StandardCharsets.UTF_8);
+        remote.seed(ModuleStorageContract.CACHE_KEY, cache);
+        ModuleStorage storage = ModuleStorage.hostBackedForTest(remote);
+        storage.attachFiles(folder.getRoot());
+        PurifierConfig config = new PurifierConfig(storage.configStore(), storage.legacyConfiguration(), null);
+        assertTrue(config.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        assertArrayEquals(cache, storage.resolverCacheStore().read());
+        assertEquals(0, storage.mutationGuard().snapshot().remoteWrites);
+        FakeReadOnlyBridge offline = new FakeReadOnlyBridge(false);
+        ModuleStorage next = ModuleStorage.hostBackedForTest(offline);
+        next.attachFiles(folder.getRoot());
+        PurifierConfig loaded = new PurifierConfig(next.configStore(), next.legacyConfiguration(), null);
+        assertTrue(loaded.isEnabled(PurifierConfig.Feature.SEARCH_HOT_WORDS));
+        assertArrayEquals(cache, next.resolverCacheStore().read());
+        assertFalse(offline.attempted);
     }
 
     @Test
-    public void unavailableFrameworkReadFailsClosedWithoutPersistentWrite() {
-        ModuleStorage storage = ModuleStorage.readOnlyBackedForTest(
-                new FakeReadOnlyBridge(false));
-        storage.attachContext(null);
-
-        assertFalse(storage.isRemoteAvailable());
-        assertNull(storage.configStore().read());
-        assertFalse(storage.configStore().write(new byte[]{1}, "configCreateDefaults"));
-        assertEquals(0L, storage.mutationGuard().snapshot().remoteWrites);
-        assertEquals(0L, storage.mutationGuard().snapshot().hostPrivateWrites);
-    }
-
-    @Test
-    public void foregroundWriterGrammarExposesOnlyFixedConfigAndCacheKeys() {
-        assertTrue(ModuleStorageContract.isTrustedActivityCaller(
-                CoolapkModule.TARGET_PACKAGE));
-        assertFalse(ModuleStorageContract.isTrustedActivityCaller(null));
-        assertFalse(ModuleStorageContract.isTrustedActivityCaller("com.example.foreign"));
-
+    public void snapshotGrammarExposesOnlyFixedConfigAndCacheKeys() {
         assertTrue(ModuleStorageContract.isValidKey(ModuleStorageContract.CONFIG_KEY));
         assertTrue(ModuleStorageContract.isValidKey(ModuleStorageContract.CACHE_KEY));
         assertFalse(ModuleStorageContract.isValidKey("arbitrary"));
@@ -106,15 +70,10 @@ public final class ModuleStorageBridgeTest {
         assertFalse(ModuleStorageContract.isValidWriteReason(
                 ModuleStorageContract.CACHE_KEY, "configCreateDefaults"));
 
-        assertTrue(ModuleStorageContract.isValidMethod(ModuleStorageContract.METHOD_PROBE));
-        assertTrue(ModuleStorageContract.isValidMethod(ModuleStorageContract.METHOD_READ));
-        assertTrue(ModuleStorageContract.isValidMethod(ModuleStorageContract.METHOD_WRITE));
-        assertFalse(ModuleStorageContract.isValidMethod("delete"));
-        assertFalse(ModuleStorageContract.isValidMethod(null));
     }
 
     @Test
-    public void foregroundCacheHandoffRejectsMalformedOrOversizedSnapshots() {
+    public void cacheMigrationRejectsMalformedOrOversizedSnapshots() {
         assertTrue(ResolutionCache.isValidSnapshot(
                 "{\"schema\":4,\"entries\":[]}".getBytes(StandardCharsets.UTF_8)));
         assertFalse(ResolutionCache.isValidSnapshot(
@@ -124,7 +83,7 @@ public final class ModuleStorageBridgeTest {
         assertFalse(ResolutionCache.isValidSnapshot(
                 "{not-json".getBytes(StandardCharsets.UTF_8)));
         assertFalse(ResolutionCache.isValidSnapshot(
-                new byte[ModuleStorageContract.CACHE_HANDOFF_MAX_BYTES + 1]));
+                new byte[ModuleStorageContract.CACHE_MAX_BYTES + 1]));
         assertFalse(ResolutionCache.isValidSnapshot(
                 "{\"schema\":4,\"entries\":[{},{},{},{},{},{}]}"
                         .getBytes(StandardCharsets.UTF_8)));
@@ -135,6 +94,7 @@ public final class ModuleStorageBridgeTest {
         private final boolean connectSuccess;
         private final Map<String, byte[]> values = new HashMap<>();
         private boolean available;
+        private boolean attempted;
 
         FakeReadOnlyBridge(boolean connectSuccess) {
             this.connectSuccess = connectSuccess;
@@ -146,6 +106,7 @@ public final class ModuleStorageBridgeTest {
 
         @Override
         public ModuleStorage.ProbeResult connect() {
+            attempted = true;
             available = connectSuccess;
             return new ModuleStorage.ProbeResult(available,
                     available ? "fakeReadable" : "fakeUnavailable");

@@ -9,11 +9,9 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Observable ownership boundary for persistence.
  *
- * <p>Production persistence records framework/module-owned writes here. A
- * host-private backend would have to record its mutation kind through the
- * same seam; no such backend is wired into production. The snapshot is also
- * emitted in module logs so device runs can assert the architecture invariant
- * without reading any Coolapk-owned data.</p>
+ * <p>The host-private backend records atomic configuration/cache mutations.
+ * Diagnostics stay in bounded memory. The snapshot is emitted in module logs
+ * to distinguish expected host-file writes from forbidden framework writes.</p>
  */
 final class HostDataMutationGuard {
     enum HostMutation {

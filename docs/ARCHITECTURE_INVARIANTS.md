@@ -1,136 +1,66 @@
 # Architecture Invariants
 
-本文件固化 coolapk-purifier 的三项架构原则及其工程定义、审计方式与当前审计结论。
-这些原则由 `tools/release_invariant_check.py` 作为 release gate 自动检查
-（检查对象为 release merged manifest、release APK 及其 R8 DEX、生产源码与生产依赖）。
+`tools/release_invariant_check.py` 检查 release merged manifest、release APK
+及其 R8 DEX、生产源码与依赖。设置恢复为宿主内页面后，下列约束继续生效。
 
 ## 1. NO_BACKGROUND_WORK
 
-工程定义：
+- 模块 APK 不声明 Activity、Provider、Service 或 Receiver，不启动模块进程。
+- 用户从酷安原生设置最上方进入配置页。`SettingsHooks` 在宿主进程内创建
+  Activity 所属的 Dialog，不替换原生设置 Activity、Fragment 或列表。
+- 返回时关闭 Dialog 并保留原生设置；Activity 销毁时关闭所属页面；重复进入
+  不叠加页面或入口。无需跨应用启动权限、自启动或后台白名单。
+- 配置页背景覆盖整个窗口，系统栏与刘海边距施加于页面内部，导航栏区域不得
+  透出底层原生设置。进入与返回复用宿主动画资源，并遵循系统过渡动画缩放。
+- 业务 hook 由酷安生命周期驱动，无后台服务或常驻通知。
+- Gate 的组件 allowlist 为空，禁止后台运行、唤醒、定时任务相关权限。
 
-- 普通 Coolapk 启动/使用不能为了模块配置或缓存而启动模块 app process。
-- 模块 APK 不声明、也不运行：自定义 background Service、Foreground Service、
-  JobService、WorkManager Worker、Alarm-driven worker、BOOT_COMPLETED receiver、
-  package-change/update receiver、silent custom BroadcastReceiver、
-  自定义后台 ContentProvider IPC bridge、常驻 notification。
-- `ModuleConfigActivity` 只由用户从 Coolapk 设置页主动进入（导出，但用平台提供的
-  `getCallingPackage()` 校验，非 `com.coolapk.market` 调用立即结束）。
-- Activity 退出后模块自建 executor 停止（`onDestroy()` 中 `executor.shutdownNow()`）。
-  Android 短时保留空闲 cached process 不算后台工作；不使用 `killProcess()`
-  追求 pid 立即消失。
-- libxposed 官方 `XposedProvider` 是 framework integration surface，予以保留，
-  但不被本模块当作后台任务调度器。
-- injected Coolapk process 内的业务 Hook 不等于"模块后台进程"。
+### 宿主私有文件与迁移
 
-Release gate（自动）：
-
-- component allowlist：Activity 仅 `ModuleConfigActivity`；Provider 仅
-  `io.github.libxposed.service.XposedProvider`；不得存在任何 service/receiver。
-- permission denylist：`FOREGROUND_SERVICE`、`RECEIVE_BOOT_COMPLETED`、
-  `SCHEDULE_EXACT_ALARM`、`USE_EXACT_ALARM`、`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`、
-  `WAKE_LOCK` 全部禁止出现。
-- 依赖未来若自动合并新组件/权限：gate FAIL，需人工审查后才能更新 allowlist。
-
-### libxposed service 102 AAR 审计（v5.4.1）
-
-审计对象：本地 Gradle 缓存 `io.github.libxposed:service:102.0.0` AAR。
-
-- manifest 仅声明 `XposedProvider`（ContentProvider，exported，
-  authority `${applicationId}.XposedService`），无 service/receiver/job/权限。
-- `XposedProvider` 为普通 `ContentProvider` 子类（query/call 等），
-  接收 framework binder 调用。
-- classes.jar 全量类列表：`HookedTarget`、`HotReloadResult`、`RemotePreferences`、
-  `XposedProvider`、`XposedService`、`XposedServiceHelper` 及内部类。
-- 字节码常量池扫描：无 `java/net/`、`javax/net/`、OkHttp、Socket、Timer、
-  ScheduledExecutor、AlarmManager、Handler.postDelayed、WorkManager、
-  JobScheduler、Service、BroadcastReceiver、DownloadManager 引用。
-- 结论：它是 ContentProvider 形态的 framework binder 入口，无网络代码、
-  无周期调度器、无 service/receiver/job，符合 framework-owned surface 定位。
-  不 fork、不修改官方 AAR。
-
-### 配置页进程生命周期收口（v5.4.1 静态复核）
-
-- `ModuleConfigActivity`：单线程 daemon executor；`onDestroy()` 调用
-  `shutdownNow()`；无 Handler/postDelayed；无自建 receiver/service；无网络。
-- `ModuleStorageServiceCore`：仅注册 libxposed 官方
-  `XposedServiceHelper.OnServiceListener`（static binder listener），
-  `awaitService` 有 2500 ms 上限，无无限等待、无重试循环。
-- Activity 关闭后不存在本模块自建的在跑 worker 或 pending periodic task。
-  若 Android 暂时保留 cached process：无任务执行，记为
-  `NO_BACKGROUND_WORK_VIOLATION = false`。
+- 设置：酷安 `files/coolapk_purifier_config.json`。
+- 解析缓存：酷安 `files/coolapk_purifier_resolver_cache.json`，最多 5 个身份
+  条目、总计 1 MiB。诊断仅使用有界内存与框架日志。
+- `HostPrivateBlobStore` 限定文件名、原因和大小。同目录临时文件写完并
+  `FileDescriptor.sync()` 后原子替换旧快照；失败保留旧文件并回滚开关。
+- 宿主文件缺失时，通过 API 102 `getRemotePreferences` 只读迁移旧框架值。
+  宿主文件存在后始终优先；损坏配置不回退到陈旧的框架值。
+- 远程存储不可用不影响宿主设置；新配置使用默认值。schema 1 → 2 的旧键
+  规则保留，历史 `remove_related_data` 不会自动重新开启。
+- 移除 libxposed service 依赖、框架偏好写入器、跨应用配置 Activity。
+  Gate 检查旧组件和写入接口不会重新引入。
+- `HostDataMutationGuard` 记录预期的宿主文件写入、临时文件与 rename，框架
+  写入应为 0。旧 `ZERO_HOST_PRIVATE_WRITE` 已由本次存储设计替代。
 
 ## 2. NO_PERIODIC_POLLING
 
-项目禁止的是：无限循环、固定周期心跳、后台轮询、反复查询更新、
-反复查询 RemotePreferences、永不终止的 retry。
+禁止无限循环、固定周期心跳、后台轮询和不终止的重试。允许以下有界机制：
 
-允许的有限机制（全部一次性、生命周期绑定、明确终止）：
+| 机制 | 上限与终止条件 |
+| --- | --- |
+| resolver watchdog | 8 s / 20 s 两个 one-shot；terminal 后清除，不自重排 |
+| 设置入口重试 | 0 / 100 / 250 / 500 / 1000 ms，最多 5 次；成功、暂停或销毁即取消 |
+| bootstrap retire / recovery toast | 一次性 callback；终态清理 |
+| RuntimeDexObserver | loadClass 事件驱动；terminal 时 close + unhook |
+| resolver worker / DexKit | 按需执行，terminal 时 shutdown / closeSession |
+| BootstrapTrace | 有界内存，终态冻结 |
+| 业务 hook | 功能事件回调，关闭时不安装或透传原调用 |
 
-| surface | delay/cadence | max count | cancel/terminal condition | periodic? | network? |
-|---|---|---|---|---|---|
-| resolver startup watchdog | 8 s + 20 s 两个 one-shot postDelayed | 2 | terminal 后 `removeCallbacksAndMessages(null)`；`watchdog()` 内 terminal 直接返回（不产生新 session）；不自重排 | no | no |
-| settings page injection retry (`PageInjectionRetry`) | 0/100/250/500/1000 ms | 5 次 | 成功即 cancel；Activity pause/destroy cancel；exhaust 后停止不重排 | no | no |
-| bootstrap retire delayed action | 一次性短延迟 | 1 | 终态后不再触发；terminal cleanup 清空 mainHandler 队列 | no | no |
-| recovery toast window (`RecoveryController`) | 1200 ms one-shot | 1 | 一次性 | no | no |
-| RuntimeDexObserver | 事件触发（loadClass） | n/a | terminal `close()` + unhook；无 timer | no | no |
-| resolver worker | 单线程 executor | n/a | terminal `worker.shutdown()`；无任务时不运行 | no | no |
-| DexKitBridge | 按需打开 | n/a | terminal `closeSession("terminal")` 物理关闭 | no | no |
-| diagnostic BootstrapTrace | 启动期有界内存记录 | 有界 | `traceFrozen=true` 后冻结 | no | no |
-| 业务 Hook（feed/splash/reply/...） | 事件拦截 | n/a | 配置关闭则不安装；属模块功能本身 | no | no |
-| ModuleConfigActivity executor | 用户操作触发 | n/a | `onDestroy()` → `shutdownNow()` | no | no |
-| libxposed XposedProvider | framework binder 回调 | n/a | framework 生命周期管理 | no | no |
-
-Release gate（自动）：源码 denylist 命中即 FAIL 并转人工审查：
-`scheduleAtFixedRate`、`scheduleWithFixedDelay`、`Timer.scheduleAtFixedRate`、
-`PeriodicWorkRequest`、`setRepeating`、`setInexactRepeating`、`while(true)`；
-并要求 watchdog 恰好 2 个 one-shot 调度点且 `watchdog()` 内无重排。
-
-文档措辞约定：推荐表述为"无后台常驻、无周期轮询"；不写"完全没有任何
-定时/延迟任务"（存在上述有限生命周期 callback）。
+Gate 禁止周期调度、重复 Alarm 与 `while(true)`，并检查 watchdog 恰为两个
+one-shot 且不自重排。
 
 ## 3. NO_SELF_UPDATE_NETWORKING
 
-产品原则：
-
-1. 模块 app process 不主动联网检查版本。
-2. 模块不下载 APK。
-3. 模块不静默安装/请求安装更新。
-4. 模块不周期访问 GitHub/API/CDN。
-5. injected Coolapk process 不借用宿主网络权限替模块联网。
-6. 更新由用户从 GitHub Releases / 可信分发渠道手动完成。
-
-安全边界（重要）：仅"模块 manifest 无 INTERNET"不够——Xposed 模块代码运行在
-`com.coolapk.market` 进程中时继承宿主 UID/网络能力。因此必须同时满足：
-
-- A. 模块 APK 自身无 `INTERNET` / `ACCESS_NETWORK_STATE` 权限；
-- B. injected source 与 R8 后的 release DEX 都不存在任何主动网络实现。
-
-Release gate（自动）：
-
-- manifest：`INTERNET`、`ACCESS_NETWORK_STATE` 禁止出现。
-- 生产依赖 allowlist：仅 libxposed api/service、kotlin-stdlib（compileOnly）、
-  DexKit；禁止 OkHttp/Retrofit/Volley/Ktor client/Cronet/Apache HttpClient/
-  update/download/analytics/telemetry SDK。
-- 生产源码 denylist：`java.net.URL`、`URLConnection`、`HttpURLConnection`、
-  `java.net.Socket`、`javax.net.ssl`、`OkHttpClient`、`Retrofit`、
-  `DownloadManager`、`Cronet`、`SocketChannel`、`raw.githubusercontent`、
-  `api.github.com`。
-- release DEX denylist：对上述 API 的 DEX 类型描述符/字符串做二进制扫描。
-- updater absence：不得存在 `UpdateActivity`/`UpdateService`/`UpdateWorker`/
-  `UpdateReceiver`/`checkForUpdates`/`downloadApk`/`installApk`/`selfUpdate`。
-
-注：DexKit native 的普通字符串与 README 中的 GitHub Releases 文档 URL 不属于
-运行时网络实现；静态 gate 针对 production classes 与 release DEX，
-README 文档 URL 不应导致假失败。联网策略的主要 proof 是
-manifest / source / R8 DEX / dependency graph，不靠抓包
-（injected code 在宿主进程内，抓包无法干净区分且引入环境变量）。
+- 模块及其注入代码不联网检查版本、不下载或安装 APK，不周期访问远程服务，
+  也不借用宿主网络权限替模块联网。
+- 模块无 INTERNET / ACCESS_NETWORK_STATE 权限。更新由用户手动完成。
+- Gate 同时检查 manifest、生产源码、R8 DEX 和依赖；不能只依赖模块没有网络
+  权限，因为注入代码具备宿主 UID 的能力。
+- 生产依赖仅允许 libxposed API、compileOnly Kotlin 标准库和 DexKit。
 
 ## Gate 用法
 
-```bash
-python tools/release_invariant_check.py \
-  app/build/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml \
-  <release.apk>
+```powershell
+python tools/release_invariant_check.py app/build/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml app/build/outputs/apk/release/app-release.apk
 ```
 
-退出码 0 = 全部 PASS。任何命中都只报告并转人工审查，不自动改代码。
+退出码 0 表示全部通过。脚本只报告，不修改源码。

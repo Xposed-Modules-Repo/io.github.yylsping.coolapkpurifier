@@ -11,10 +11,10 @@ import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Cross-cutting proof of the ZERO_HOST_PRIVATE_WRITE persistence invariant. */
+/** Checks memory-store audit accounting and bounded in-memory diagnostics. */
 public final class HostDataMutationGuardTest {
     @Test
-    public void configCacheAndDiagnosticsNeverMutateHostPrivateStorage() throws Exception {
+    public void memoryConfigCacheAndDiagnosticsAccountWithoutFilesystemWrites() throws Exception {
         HostDataMutationGuard guard = new HostDataMutationGuard();
         ModuleStorage.MemoryBlobStore configStore =
                 new ModuleStorage.MemoryBlobStore("testRemote", guard);
@@ -79,7 +79,7 @@ public final class HostDataMutationGuardTest {
     }
 
     @Test
-    public void guardClassifiesEveryForbiddenHostMutationKind() {
+    public void guardClassifiesEveryHostMutationKind() {
         HostDataMutationGuard guard = new HostDataMutationGuard();
         for (HostDataMutationGuard.HostMutation mutation
                 : HostDataMutationGuard.HostMutation.values()) {

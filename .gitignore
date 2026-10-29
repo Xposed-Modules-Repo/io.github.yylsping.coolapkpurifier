@@ -65,6 +65,12 @@ prompts/
 # Local experiment notes, device captures and logs
 processing*/
 /local-archive*/
+/cleanup*.py
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.log
 /*.png
 /*.jpg
